@@ -178,7 +178,7 @@ def get_referenced_context_path(frontmatter_lines: List[str], doc_path: Path) ->
     is_flag=True,
     help="Verify recorded SHAs against current repository states",
 )
-def context_command(path: str, verify: bool) -> None:
+def repo_check_command(path: str, verify: bool) -> None:
     """
     Manage and verify Git tree SHAs in context/design documents.
 
@@ -186,9 +186,9 @@ def context_command(path: str, verify: bool) -> None:
     on the referenced context document automatically.
 
     Examples:
-        tool context /root/Desktop/context/context-20260602-1.md
-        tool context /root/Desktop/context/context-20260602-1.md --verify
-        tool context /root/Desktop/design/design-20260602-1.md -v
+        tool repo-check /root/Desktop/context/context-20260602-1.md
+        tool repo-check /root/Desktop/context/context-20260602-1.md --verify
+        tool repo-check /root/Desktop/design/design-20260602-1.md -v
     """
     doc_path = Path(path).resolve()
     
