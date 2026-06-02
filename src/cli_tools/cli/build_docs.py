@@ -625,11 +625,13 @@ def build_design_doc_command(
                             if sha and sha != recorded_sha:
                                 mismatches.append(r_name)
                     if mismatches:
-                        click.echo(f"⚠️  Warning: The context doc is stale. Mismatch in repos: {', '.join(mismatches)}", err=True)
+                        click.echo(f"❌ Error: The referenced context document is stale (mismatches: {', '.join(mismatches)}). Please update context doc first.", err=True)
+                        sys.exit(1)
                     else:
                         click.echo("✅ Referenced context freshness verified.")
             except Exception as e:
-                click.echo(f"⚠️  Warning: Could not verify context doc freshness: {e}", err=True)
+                click.echo(f"❌ Error: Could not verify context doc freshness: {e}", err=True)
+                sys.exit(1)
 
         # Set relative context path
         if is_new or context_doc:
