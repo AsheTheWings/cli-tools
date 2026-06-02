@@ -19,13 +19,16 @@ import click
 def resolve_repo_path(repo_name: str, context_doc_dir: Path) -> Optional[Path]:
     """Resolve a repository name to its actual directory path on the filesystem."""
     candidates = [repo_name]
-    if "/" in repo_name:
-        parts = repo_name.split("/")
-        # Add prefixes: e.g. for "portfolio/dev", try "portfolio"
-        for i in range(1, len(parts)):
-            candidates.append("/".join(parts[:i]))
+    
+    # Only split relative repository paths (like "portfolio/dev" -> "portfolio")
+    # Never strip directories from absolute paths to avoid false matches on parents like /root/Desktop
+    if "/" in repo_name and not repo_name.startswith("/"):
+        parts = repo_name.rsplit("/", 1)
+        candidates.append(parts[0])
 
     for cand in candidates:
+        if not cand:
+            continue
         # Try as direct absolute path
         p = Path(cand)
         if p.is_absolute() and p.is_dir():
@@ -220,6 +223,13 @@ def is_purely_backend(repo_name: str) -> bool:
     return "backend" in repo_lower or "server" in repo_lower or "mcp" in repo_lower
 
 
+def is_git_repo(repo_path: Path) -> bool:
+    """Check if the given directory path is a valid Git repository."""
+    if not repo_path.is_dir():
+        return False
+    return (repo_path / ".git").exists()
+
+
 # =========================================================================
 # Subcommand: build-context-doc
 # =========================================================================
@@ -281,6 +291,9 @@ def build_context_doc_command(
             resolved = resolve_repo_path(r_name, doc_path.parent)
             if not resolved:
                 click.echo(f"❌ Could not resolve path for repository: {r_name}", err=True)
+                sys.exit(1)
+            if not is_git_repo(resolved):
+                click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
                 sys.exit(1)
             
             sha = generate_tree_sha(resolved)
@@ -364,6 +377,9 @@ def build_context_doc_command(
         resolved = resolve_repo_path(r_name, doc_path.parent)
         if not resolved:
             click.echo(f"❌ Could not resolve path for repository: {r_name}", err=True)
+            sys.exit(1)
+        if not is_git_repo(resolved):
+            click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
             sys.exit(1)
         sha = generate_tree_sha(resolved)
         if not sha:
@@ -507,6 +523,9 @@ def build_design_doc_command(
             if not resolved:
                 click.echo(f"❌ Could not resolve path for repository: {r_name}", err=True)
                 sys.exit(1)
+            if not is_git_repo(resolved):
+                click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
+                sys.exit(1)
 
             sha = generate_tree_sha(resolved)
             if not sha:
@@ -599,6 +618,9 @@ def build_design_doc_command(
                     for r_name, recorded_sha in ctx_repos.items():
                         resolved = resolve_repo_path(r_name, resolved_ctx.parent)
                         if resolved:
+                            if not is_git_repo(resolved):
+                                click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
+                                sys.exit(1)
                             sha = generate_tree_sha(resolved)
                             if sha and sha != recorded_sha:
                                 mismatches.append(r_name)
@@ -629,6 +651,16 @@ def build_design_doc_command(
                         target_repos = list(extract_repos(ctx_fm).keys())
                 except Exception:
                     pass
+
+    # Validate target repos are git repos
+    for r_name in target_repos:
+        resolved = resolve_repo_path(r_name, doc_path.parent)
+        if not resolved:
+            click.echo(f"❌ Could not resolve path for repository: {r_name}", err=True)
+            sys.exit(1)
+        if not is_git_repo(resolved):
+            click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
+            sys.exit(1)
 
     # Build properties
     doc_title = title or existing_frontmatter.get("title") or "Timeline Agent Threads and Sessions Architecture"
