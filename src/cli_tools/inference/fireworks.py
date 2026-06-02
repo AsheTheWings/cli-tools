@@ -78,7 +78,11 @@ class FireworksClient:
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # Check if Ubuntu system ca-certificates bundle exists to trust proxy/MITM certs
+        verify_path = "/etc/ssl/certs/ca-certificates.crt"
+        verify = verify_path if os.path.exists(verify_path) else True
+
+        async with httpx.AsyncClient(verify=verify, timeout=60.0) as client:
             response = await client.post(
                 f"{FIREWORKS_BASE_URL}/chat/completions",
                 json=payload,
