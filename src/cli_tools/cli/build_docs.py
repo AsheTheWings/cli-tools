@@ -192,6 +192,28 @@ def get_next_filename(parent_dir: Path, prefix: str) -> Path:
     return parent_dir / f"{prefix}-{today}-{next_n}.md"
 
 
+def get_latest_filename(parent_dir: Path, prefix: str) -> Optional[Path]:
+    """Find the most recent file in parent_dir based on format 'prefix-YYYYMMDD-N.md'."""
+    if not parent_dir.exists():
+        return None
+        
+    latest_file = None
+    max_date_n = (0, 0)  # (YYYYMMDD, N)
+    
+    for f in parent_dir.glob(f"{prefix}-*.md"):
+        parts = f.stem.split("-")
+        if len(parts) >= 3:
+            try:
+                date_val = int(parts[1])
+                n_val = int(parts[2])
+                if (date_val, n_val) > max_date_n:
+                    max_date_n = (date_val, n_val)
+                    latest_file = f
+            except ValueError:
+                pass
+    return latest_file
+
+
 def is_purely_backend(repo_name: str) -> bool:
     """Heuristic to determine if a repository is purely backend/infrastructure."""
     repo_lower = repo_name.lower()
@@ -224,10 +246,14 @@ def build_context_doc_command(
     today_dash = datetime.now().strftime("%Y-%m-%d")
 
     if verify:
-        if not path:
-            click.echo("❌ Document path is required when using --verify.", err=True)
-            sys.exit(1)
-        doc_path = Path(path).resolve()
+        if path:
+            doc_path = Path(path).resolve()
+        else:
+            doc_path = get_latest_filename(Path("/root/Desktop/context"), "context")
+            if not doc_path:
+                click.echo("❌ No context document found to verify.", err=True)
+                sys.exit(1)
+        
         if not doc_path.exists():
             click.echo(f"❌ File not found: {doc_path}", err=True)
             sys.exit(1)
@@ -285,8 +311,17 @@ def build_context_doc_command(
         doc_path = Path(path).resolve()
         is_new = not doc_path.exists()
     else:
-        doc_path = get_next_filename(Path("/root/Desktop/context"), "context")
-        is_new = True
+        # If repositories are provided, we initialize a new context doc
+        if repos:
+            doc_path = get_next_filename(Path("/root/Desktop/context"), "context")
+            is_new = True
+        else:
+            # If no repositories provided, update the latest context doc
+            doc_path = get_latest_filename(Path("/root/Desktop/context"), "context")
+            if not doc_path:
+                click.echo("❌ No context document found to update.", err=True)
+                sys.exit(1)
+            is_new = False
 
     # Read existing content if file exists
     existing_frontmatter = {}
@@ -425,25 +460,27 @@ def build_design_doc_command(
         ctx_doc_path = None
         if path:
             design_path = Path(path).resolve()
-            if design_path.exists():
-                try:
-                    content = design_path.read_text(encoding="utf-8")
-                    frontmatter_lines, _ = parse_frontmatter(content)
-                    if frontmatter_lines is not None:
-                        ctx_doc_path = get_referenced_context_path(frontmatter_lines, design_path)
-                except Exception as e:
-                    click.echo(f"❌ Failed to parse context from design document: {e}", err=True)
-                    sys.exit(1)
-        
-        if context_doc:
+        else:
+            design_path = get_latest_filename(Path("/root/Desktop/design"), "design")
+
+        if design_path and design_path.exists():
+            try:
+                content = design_path.read_text(encoding="utf-8")
+                frontmatter_lines, _ = parse_frontmatter(content)
+                if frontmatter_lines is not None:
+                    ctx_doc_path = get_referenced_context_path(frontmatter_lines, design_path)
+            except Exception as e:
+                click.echo(f"⚠️  Failed to parse context from design document: {e}", err=True)
+
+        if not ctx_doc_path and context_doc:
             ctx_doc_path = Path(context_doc).resolve()
 
         if not ctx_doc_path:
-            click.echo("❌ Could not locate context document to verify. Provide a design doc path or a --context-doc path.", err=True)
-            sys.exit(1)
+            # Fallback to the latest context document
+            ctx_doc_path = get_latest_filename(Path("/root/Desktop/context"), "context")
 
-        if not ctx_doc_path.exists():
-            click.echo(f"❌ Context document file not found: {ctx_doc_path}", err=True)
+        if not ctx_doc_path or not ctx_doc_path.exists():
+            click.echo("❌ Could not locate context document to verify.", err=True)
             sys.exit(1)
 
         # Run verification using helper logic
@@ -499,8 +536,17 @@ def build_design_doc_command(
         doc_path = Path(path).resolve()
         is_new = not doc_path.exists()
     else:
-        doc_path = get_next_filename(Path("/root/Desktop/design"), "design")
-        is_new = True
+        # If context_doc or repos are provided, initialize a new design doc
+        if context_doc or repos:
+            doc_path = get_next_filename(Path("/root/Desktop/design"), "design")
+            is_new = True
+        else:
+            # Otherwise, update the latest design doc
+            doc_path = get_latest_filename(Path("/root/Desktop/design"), "design")
+            if not doc_path:
+                click.echo("❌ No design document found to update.", err=True)
+                sys.exit(1)
+            is_new = False
 
     # Read existing content if file exists
     existing_frontmatter = {}
