@@ -162,6 +162,30 @@ def extract_repos(frontmatter_lines: List[str]) -> Dict[str, str]:
     return repos
 
 
+def extract_yaml_list(frontmatter_lines: List[str], key: str) -> List[str]:
+    """Extract YAML array items for a given key from frontmatter lines."""
+    in_section = False
+    items = []
+    for line in frontmatter_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(f"{key}:"):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith(" ") or line.startswith("\t"):
+                # Strip list prefix '-' if present
+                item = stripped.lstrip("-").strip()
+                item = item.split("#")[0].strip()
+                item = item.strip('"').strip("'")
+                if item:
+                    items.append(item)
+            else:
+                in_section = False
+    return items
+
+
 def get_referenced_context_path(frontmatter_lines: List[str], doc_path: Path) -> Optional[Path]:
     """Find referenced context document path if this is a design document."""
     for line in frontmatter_lines:
@@ -239,13 +263,17 @@ def is_git_repo(repo_path: Path) -> bool:
 @click.option("-r", "--repo", "repos", multiple=True, help="Target repository names or paths")
 @click.option("-v", "--verify", is_flag=True, help="Verify recorded SHAs in context doc")
 @click.option("-t", "--title", help="Context document title")
-@click.option("-s", "--scope", help="Feature scope")
+@click.option("-f", "--feature", "features", multiple=True, help="Target features (top-level scopes)")
+@click.option("-s", "--scope", "scopes", multiple=True, help="Target scopes")
+@click.option("-d", "--description", help="Context document description")
 def build_context_doc_command(
     path: Optional[str],
     repos: Tuple[str, ...],
     verify: bool,
     title: Optional[str],
-    scope: Optional[str],
+    features: Tuple[str, ...],
+    scopes: Tuple[str, ...],
+    description: Optional[str],
 ) -> None:
     """
     Build, update, or verify a context document.
@@ -339,6 +367,8 @@ def build_context_doc_command(
     # Read existing content if file exists
     existing_frontmatter = {}
     existing_repos = {}
+    existing_features = []
+    existing_scopes = []
     existing_body = None
     existing_created = None
 
@@ -348,6 +378,8 @@ def build_context_doc_command(
             frontmatter_lines, body_lines = parse_frontmatter(content)
             if frontmatter_lines is not None:
                 existing_repos = extract_repos(frontmatter_lines)
+                existing_features = extract_yaml_list(frontmatter_lines, "features")
+                existing_scopes = extract_yaml_list(frontmatter_lines, "scopes")
                 existing_body = "".join(body_lines)
                 # Simple extraction of key properties to keep
                 for line in frontmatter_lines:
@@ -388,19 +420,55 @@ def build_context_doc_command(
         computed_shas[r_name] = sha
         click.echo(f"  - {r_name} => {sha}")
 
+    # Resolve target features and scopes
+    target_features = list(features)
+    if not target_features:
+        if existing_features:
+            target_features = existing_features
+        else:
+            target_features = ["[feature]"]
+
+    target_scopes = list(scopes)
+    if not target_scopes:
+        if existing_scopes:
+            target_scopes = existing_scopes
+        else:
+            target_scopes = ["[scope]"]
+
+    # Determine feature scope string for description placeholder
+    if features:
+        feature_scope = ", ".join(features)
+    elif scopes:
+        feature_scope = ", ".join(scopes)
+    else:
+        feature_scope = "[feature_scope]"
+
     # Build properties
-    doc_title = title or existing_frontmatter.get("title") or "Agent Features, Sessions, and Workflows"
-    doc_scope = scope or doc_title.lower()
+    doc_title = title or existing_frontmatter.get("title") or "[Short context title]"
+    
+    if description:
+        doc_description = description
+    elif existing_frontmatter.get("description"):
+        doc_description = existing_frontmatter.get("description")
+    else:
+        doc_description = f"Current behavior and implementation context for {feature_scope}."
+
     doc_created = existing_created or today_dash
 
     # Construct frontmatter
     fm = []
     fm.append(f"title: {doc_title}\n")
-    fm.append(f"description: Current behavior and implementation context for {doc_scope}.\n")
+    fm.append(f"description: {doc_description}\n")
     fm.append("status: draft\n")
     fm.append("repos:\n")
     for r_name, r_sha in computed_shas.items():
         fm.append(f"  {r_name}: {r_sha}\n")
+    fm.append("features:\n")
+    for feat in target_features:
+        fm.append(f"  - {feat}\n")
+    fm.append("scopes:\n")
+    for sc in target_scopes:
+        fm.append(f"  - {sc}\n")
     fm.append(f"created: {doc_created}\n")
     fm.append(f"updated: {today_dash}\n")
 
@@ -454,14 +522,20 @@ def build_context_doc_command(
 @click.option("-c", "--context-doc", help="Referenced context document absolute path")
 @click.option("-v", "--verify", is_flag=True, help="Verify freshness of target repos")
 @click.option("-t", "--title", help="Design document title")
+@click.option("-f", "--feature", "features", multiple=True, help="Target features (top-level scopes)")
+@click.option("-s", "--scope", "scopes", multiple=True, help="Target scopes")
 @click.option("-g", "--goal", help="Design goal")
+@click.option("-d", "--description", help="Design document description")
 def build_design_doc_command(
     path: Optional[str],
     repos: Tuple[str, ...],
     context_doc: Optional[str],
     verify: bool,
     title: Optional[str],
+    features: Tuple[str, ...],
+    scopes: Tuple[str, ...],
     goal: Optional[str],
+    description: Optional[str],
 ) -> None:
     """
     Build, initialize, or verify a design document.
@@ -567,9 +641,10 @@ def build_design_doc_command(
                 sys.exit(1)
             is_new = False
 
-    # Read existing content if file exists
     existing_frontmatter = {}
     existing_repos = []
+    existing_features = []
+    existing_scopes = []
     existing_body = None
     existing_created = None
 
@@ -579,6 +654,8 @@ def build_design_doc_command(
             frontmatter_lines, body_lines = parse_frontmatter(content)
             if frontmatter_lines is not None:
                 existing_body = "".join(body_lines)
+                existing_features = extract_yaml_list(frontmatter_lines, "features")
+                existing_scopes = extract_yaml_list(frontmatter_lines, "scopes")
                 for line in frontmatter_lines:
                     if ":" in line:
                         k, v = line.split(":", 1)
@@ -604,6 +681,9 @@ def build_design_doc_command(
 
     # Resolve context path
     doc_context = existing_frontmatter.get("context")
+    ctx_features = []
+    ctx_scopes = []
+    
     if context_doc:
         resolved_ctx = Path(context_doc).resolve()
         # Verify freshness of context doc
@@ -614,6 +694,8 @@ def build_design_doc_command(
                 ctx_fm, _ = parse_frontmatter(ctx_content)
                 if ctx_fm:
                     ctx_repos = extract_repos(ctx_fm)
+                    ctx_features = extract_yaml_list(ctx_fm, "features")
+                    ctx_scopes = extract_yaml_list(ctx_fm, "scopes")
                     mismatches = []
                     for r_name, recorded_sha in ctx_repos.items():
                         resolved = resolve_repo_path(r_name, resolved_ctx.parent)
@@ -664,15 +746,51 @@ def build_design_doc_command(
             click.echo(f"❌ Repository '{r_name}' resolved to '{resolved}' is not a Git repository.", err=True)
             sys.exit(1)
 
+    # Resolve target features and scopes
+    target_features = list(features)
+    if not target_features:
+        if existing_features:
+            target_features = existing_features
+        elif ctx_features:
+            target_features = ctx_features
+        else:
+            target_features = ["[feature]"]
+
+    target_scopes = list(scopes)
+    if not target_scopes:
+        if existing_scopes:
+            target_scopes = existing_scopes
+        elif ctx_scopes:
+            target_scopes = ctx_scopes
+        else:
+            target_scopes = ["[scope]"]
+
+    # Determine design goal placeholder
+    if goal:
+        design_goal = goal
+    elif features:
+        design_goal = ", ".join(features)
+    elif scopes:
+        design_goal = ", ".join(scopes)
+    else:
+        design_goal = "[design_goal]"
+
     # Build properties
-    doc_title = title or existing_frontmatter.get("title") or "Timeline Agent Threads and Sessions Architecture"
-    doc_goal = goal or doc_title.lower()
+    doc_title = title or existing_frontmatter.get("title") or "[Short design title]"
+    
+    if description:
+        doc_description = description
+    elif existing_frontmatter.get("description"):
+        doc_description = existing_frontmatter.get("description")
+    else:
+        doc_description = f"Design for {design_goal}."
+
     doc_created = existing_created or today_dash
 
     # Construct frontmatter
     fm = []
     fm.append(f"title: {doc_title}\n")
-    fm.append(f"description: Design for {doc_goal}.\n")
+    fm.append(f"description: {doc_description}\n")
     fm.append("status: draft\n")
     if doc_context:
         fm.append(f"context: {doc_context}\n")
@@ -680,6 +798,12 @@ def build_design_doc_command(
         fm.append("repos:\n")
         for r_name in target_repos:
             fm.append(f"  - {r_name}\n")
+    fm.append("features:\n")
+    for feat in target_features:
+        fm.append(f"  - {feat}\n")
+    fm.append("scopes:\n")
+    for sc in target_scopes:
+        fm.append(f"  - {sc}\n")
     fm.append(f"created: {doc_created}\n")
     fm.append(f"updated: {today_dash}\n")
 
