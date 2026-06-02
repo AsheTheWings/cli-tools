@@ -32,13 +32,14 @@ from cli_tools.cli.commit import commit_command
 from cli_tools.cli.generate_command import command_generator
 from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
-from cli_tools.cli.repo_check import repo_check_command
+from cli_tools.cli.build_docs import build_context_doc_command, build_design_doc_command
 
 main.add_command(commit_command, "commit")
 main.add_command(command_generator, "command")
 main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
-main.add_command(repo_check_command, "repo-check")
+main.add_command(build_context_doc_command, "build-context-doc")
+main.add_command(build_design_doc_command, "build-design-doc")
 
 
 if __name__ == "__main__":
