@@ -124,7 +124,7 @@ def parse_frontmatter(content: str) -> Tuple[Optional[List[str]], Optional[List[
         return None, None
 
     frontmatter_lines = lines[1:end_idx]
-    body_lines = lines[end_idx:]
+    body_lines = lines[end_idx + 1:]
     return frontmatter_lines, body_lines
 
 
@@ -301,7 +301,7 @@ def repo_check_command(path: str, verify: bool) -> None:
             new_frontmatter_lines.append(line)
 
         # Assemble document
-        updated_content = "---\n" + "".join(new_frontmatter_lines) + "---" + "".join(body_lines)
+        updated_content = "---\n" + "".join(new_frontmatter_lines) + "---\n" + "".join(body_lines)
         
         click.echo("💾 Updating context document...")
         try:
