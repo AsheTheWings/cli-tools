@@ -1,8 +1,8 @@
 """
-Git commit message generation using Fireworks AI.
+Git commit message generation using Tera AI.
 
 This module provides a CLI command to generate conventional commit messages
-using Fireworks AI with glm-5 model, based on staged changes.
+using Tera AI with cloudcode/chat-gemini-3-flash-paid-tier model, based on staged changes.
 """
 
 import os
@@ -15,7 +15,7 @@ from typing import Optional
 import click
 from dotenv import load_dotenv
 
-from cli_tools.inference.fireworks import get_client as get_fireworks_client
+from cli_tools.inference.tera import get_client as get_tera_client
 
 # Load environment variables
 load_dotenv()
@@ -27,7 +27,7 @@ async def generate_commit_message(
     instructions: Optional[str] = None,
 ) -> str:
     """
-    Generate a commit message using Fireworks AI.
+    Generate a commit message using Tera AI.
 
     Args:
         diff_output: Git diff output to analyze
@@ -82,18 +82,18 @@ Analyze the provided git diff and generate an appropriate commit message."""
     user_message = "".join(user_message_parts)
 
     try:
-        client = get_fireworks_client()
+        client = get_tera_client()
 
         result = await client.complete(
             system_prompt=system_instruction,
             user_prompt=user_message,
-            model="accounts/fireworks/models/glm-5p1",
+            model="cloudcode/chat-gemini-3-flash-paid-tier",
             temperature=0.7,
             reasoning_effort="high",
         )
 
         if not result:
-            raise RuntimeError("No response from Fireworks API")
+            raise RuntimeError("No response from Tera API")
 
         # Handle both (content, usage) and (content, reasoning, usage) returns
         if len(result) == 3:
@@ -102,7 +102,7 @@ Analyze the provided git diff and generate an appropriate commit message."""
             commit_message, usage = result
 
         if not commit_message.strip():
-            raise RuntimeError("Empty response from Fireworks API")
+            raise RuntimeError("Empty response from Tera API")
 
         return commit_message.strip()
 
@@ -246,12 +246,12 @@ def undo_trailing_stage_commits(cwd: str) -> int:
 )
 def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
     """
-    Generate a conventional commit message using Fireworks AI.
+    Generate a conventional commit message using Tera AI.
 
     This command:
     1. Stages all changes with 'git add .'
     2. Gets the diff with 'git diff HEAD'
-    3. Uses Fireworks AI to generate a conventional commit message
+    3. Uses Tera AI to generate a conventional commit message
     4. Prompts for confirmation (unless -y flag is used)
     5. Commits with the generated message if confirmed
     6. Optionally pushes to origin
@@ -315,7 +315,7 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
     click.echo()
 
     # Step 4: Generate commit message with agent
-    click.echo("🤖 Generating commit message with Fireworks AI...")
+    click.echo("🤖 Generating commit message with Tera AI...")
     try:
         commit_message = asyncio.run(
             generate_commit_message(diff_output, recent_commits, instructions)

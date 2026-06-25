@@ -1,8 +1,8 @@
-"""Inference module - Fireworks AI client."""
+"""Inference module - Tera AI client."""
 
-from .fireworks import FireworksClient, get_client
+from .tera import TeraClient, get_client
 
 __all__ = [
-    "FireworksClient",
+    "TeraClient",
     "get_client",
 ]

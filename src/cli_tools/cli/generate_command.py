@@ -1,8 +1,8 @@
 """
-Shell command generation using Fireworks AI.
+Shell command generation using Tera AI.
 
 This module provides a CLI command to generate shell commands from natural
-language descriptions using Fireworks AI with glm-5 model.
+language descriptions using Tera AI with cloudcode/chat-gemini-3-flash-paid-tier model.
 """
 
 import os
@@ -13,7 +13,7 @@ import click
 import pyperclip
 from dotenv import load_dotenv
 
-from cli_tools.inference.fireworks import get_client as get_fireworks_client
+from cli_tools.inference.tera import get_client as get_tera_client
 
 # Load environment variables
 load_dotenv()
@@ -21,7 +21,7 @@ load_dotenv()
 
 async def generate_shell_command(description: str) -> str:
     """
-    Generate a shell command from natural language description using Fireworks AI.
+    Generate a shell command from natural language description using Tera AI.
     
     Args:
         description: Natural language description of desired command
@@ -63,19 +63,19 @@ Output: OUT_OF_SCOPE"""
     user_message = f"Generate a shell command for: {description}"
     
     try:
-        client = get_fireworks_client()
+        client = get_tera_client()
         
         result = await client.complete(
             system_prompt=system_instruction,
             user_prompt=user_message,
-            model="accounts/fireworks/models/glm-5p1",
+            model="cloudcode/chat-gemini-3-flash-paid-tier",
             temperature=0.3,
             max_tokens=200,
             reasoning_effort="none",
         )
         
         if not result:
-            raise RuntimeError("No response from Fireworks API")
+            raise RuntimeError("No response from Tera API")
         
         # Handle both (content, usage) and (content, reasoning, usage) returns
         if len(result) == 3:
@@ -84,7 +84,7 @@ Output: OUT_OF_SCOPE"""
             command, usage = result
         
         if not command.strip():
-            raise RuntimeError("Empty response from Fireworks API")
+            raise RuntimeError("Empty response from Tera API")
         
         # Clean up the command (remove any markdown formatting if present)
         command = command.strip()
