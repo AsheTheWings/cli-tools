@@ -38,20 +38,20 @@ async def generate_shell_command(description: str) -> str:
 Rules:
 1. Output ONLY the executable command
 2. No explanations, no markdown, no backticks
-3. Generate PowerShell syntax by default unless the user explicitly specifies another shell (bash, cmd, etc.)
+3. Generate bash syntax by default unless the user explicitly specifies another shell (powershell, cmd, etc.)
 4. Make commands safe and non-destructive when possible
 5. Use common best practices
 6. If the request is NOT about generating a shell command, respond with EXACTLY: OUT_OF_SCOPE
 
 Examples:
 Input: "list all python files in current directory"
-Output: Get-ChildItem -Filter *.py
+Output: find . -name "*.py"
 
 Input: "find all files larger than 100MB"
-Output: Get-ChildItem -Recurse | Where-Object {$_.Length -gt 100MB}
+Output: find . -size +100M
 
 Input: "kill process on port 8000"
-Output: Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess | Stop-Process
+Output: kill $(lsof -t -i:8000)
 
 Input: "list files in bash"
 Output: ls -la

@@ -8,8 +8,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-TERA_BASE_URL = "http://127.0.0.1:9090/v1"
-MODEL_NAME = "cloudcode/chat-gemini-3-flash-paid-tier"
+DEFAULT_TERA_BASE_URL = "http://127.0.0.1:9090/v1"
+DEFAULT_MODEL_NAME = "cloudcode/chat-gemini-3-flash-paid-tier"
 
 
 class TeraClient:
@@ -35,8 +35,12 @@ class TeraClient:
         Returns:
             (content, usage) or (content, reasoning_content, usage) if reasoning is present.
         """
+        base_url = os.getenv("TERA_BASE_URL", DEFAULT_TERA_BASE_URL).rstrip("/")
+        model_name = model or os.getenv("TERA_MODEL", DEFAULT_MODEL_NAME)
+        api_key = os.getenv("TERA_API_KEY")
+
         payload = {
-            "model": MODEL_NAME,
+            "model": model_name,
             "instructions": system_prompt,
             "input": [
                 {
@@ -57,6 +61,9 @@ class TeraClient:
             "Content-Type": "application/json",
             "client-origin": "cli-tools",
         }
+        # tera requires an API key on /v1/* when TERA_API_KEYS is configured server-side.
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         # Check if Ubuntu system ca-certificates bundle exists to trust proxy/MITM certs
         verify_path = "/etc/ssl/certs/ca-certificates.crt"
@@ -64,7 +71,7 @@ class TeraClient:
 
         async with httpx.AsyncClient(verify=verify, timeout=60.0) as client:
             response = await client.post(
-                f"{TERA_BASE_URL}/responses",
+                f"{base_url}/responses",
                 json=payload,
                 headers=headers,
             )
@@ -94,7 +101,7 @@ class TeraClient:
             "prompt_tokens": usage_data.get("input_tokens", 0),
             "completion_tokens": usage_data.get("output_tokens", 0),
             "total_tokens": usage_data.get("total_tokens", 0),
-            "model": MODEL_NAME,
+            "model": model_name,
         }
 
         return content, usage

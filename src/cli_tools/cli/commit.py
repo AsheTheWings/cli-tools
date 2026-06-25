@@ -62,7 +62,9 @@ BREAKING CHANGE: Authentication API endpoints have changed
 Closes #123
 </example>
 
-Note: do not use code wrapping ```
+Notes:
+Do not use code wrapping ```
+
 Analyze the provided git diff and generate an appropriate commit message."""
 
     # Prepare user message with diff and recent commits

@@ -9,10 +9,16 @@ Usage:
 """
 
 import click
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from the current directory or parents
+# Load environment variables from the current directory or parents (per-project overrides),
+# then fall back to the cli-tools package .env so the global `tool` command always has its
+# config (e.g. TERA_API_KEY) regardless of the directory it is invoked from.
 load_dotenv()
+_package_env = Path(__file__).resolve().parents[2] / ".env"
+if _package_env.exists():
+    load_dotenv(_package_env)
 
 
 @click.group(invoke_without_command=True)
