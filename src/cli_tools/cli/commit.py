@@ -2,7 +2,7 @@
 Git commit message generation using Tera AI.
 
 This module provides a CLI command to generate conventional commit messages
-using Tera AI with cloudcode/chat-gemini-3-flash-paid-tier model, based on staged changes.
+using Tera AI with gemini-latest model, based on staged changes.
 """
 
 import os
@@ -46,24 +46,13 @@ async def generate_commit_message(
 The commit message should:
 1. Follow the format: <type>(<scope>): <subject>
 2. Use one of these types: feat, fix, docs, style, refactor, perf, test, chore, ci, build
-3. Keep the subject line under 72 characters
+3. Keep the subject line under 75 characters
 4. Use imperative mood in the subject line
 5. Don't end the subject line with a period
 6. Optionally include a body that explains the changes in detail
 7. Optionally include a footer for breaking changes or issue references
 
-<example>
-feat(auth): add OAuth2 authentication support
-
-Implement OAuth2 flow for third-party authentication.
-Add middleware for token validation and refresh.
-
-BREAKING CHANGE: Authentication API endpoints have changed
-Closes #123
-</example>
-
-Notes:
-Do not use code wrapping ```
+NOTE: Always revise your generation, make sure every line is under 75 chars.
 
 Analyze the provided git diff and generate an appropriate commit message."""
 
@@ -89,7 +78,7 @@ Analyze the provided git diff and generate an appropriate commit message."""
         result = await client.complete(
             system_prompt=system_instruction,
             user_prompt=user_message,
-            model="cloudcode/chat-gemini-3-flash-paid-tier",
+            model="gemini-latest",
             temperature=0.7,
             reasoning_effort="high",
         )

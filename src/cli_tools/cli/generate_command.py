@@ -2,7 +2,7 @@
 Shell command generation using Tera AI.
 
 This module provides a CLI command to generate shell commands from natural
-language descriptions using Tera AI with cloudcode/chat-gemini-3-flash-paid-tier model.
+language descriptions using Tera AI with gemini-latest model.
 """
 
 import os
@@ -68,7 +68,7 @@ Output: OUT_OF_SCOPE"""
         result = await client.complete(
             system_prompt=system_instruction,
             user_prompt=user_message,
-            model="cloudcode/chat-gemini-3-flash-paid-tier",
+            model="gemini-latest",
             temperature=0.3,
             max_tokens=200,
             reasoning_effort="none",

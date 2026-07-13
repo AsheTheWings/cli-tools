@@ -9,7 +9,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DEFAULT_TERA_BASE_URL = "http://127.0.0.1:9090/v1"
-DEFAULT_MODEL_NAME = "cloudcode/chat-gemini-3-flash-paid-tier"
+DEFAULT_MODEL_NAME = "gemini-latest"
 
 
 class TeraClient:
