@@ -257,7 +257,7 @@ Finding summary: PENDING
 
 ### Investigation performed
 
-[Replace this placeholder with the searches, inspections, and checks performed.]
+[Replace this placeholder with exact searches, inspections, checks, and their scope.]
 
 ### Implementation trace
 
@@ -265,11 +265,11 @@ Finding summary: PENDING
 
 ### Test and runtime evidence
 
-[Replace this placeholder with tests, commands, outcomes, and limitations.]
+[Replace this placeholder with inspected assertions, exact executed commands and outcomes, checks not performed, and limitations.]
 
 ### Edge cases and adversarial analysis
 
-[Replace this placeholder with failure modes, boundary conditions, regressions, and security analysis.]
+[Replace this placeholder with the strongest attempted disproof plus relevant failure modes, boundaries, regressions, and security analysis.]
 
 ### Defects or omissions
 
@@ -277,7 +277,7 @@ Finding summary: PENDING
 
 ### Verdict rationale
 
-[Replace this placeholder with the reasoning that supports the final verdict.]
+[Replace this placeholder with clause-by-clause reasoning that supports the final verdict.]
 <!-- REVIEW-REQUIREMENT {requirement.identifier} END -->
 """
 
@@ -288,7 +288,7 @@ def render_report(
     intro = """
 # Implementation Review Report
 
-Complete every assigned requirement section. Preserve all metadata, markers, identifiers, and headings. Replace every `PENDING` value before verification.
+Complete every assigned requirement section. Preserve all generated metadata, markers, identifiers, titles, headings, and Obligation text exactly. Replace every `PENDING` value before verification.
 
 # Requirement Reviews
 """
@@ -530,6 +530,18 @@ def validate_report_scope(report: ParsedReport) -> None:
     ]
     if report.assigned_ids != expected:
         fail(f"Report scope is not contiguous in {report.path}: {report.assigned_ids}")
+    for entry in report.entries:
+        canonical = by_id[entry.identifier]
+        if entry.title != canonical.title:
+            fail(
+                f"Requirement {entry.identifier} title in {report.path} does not match "
+                "the canonical requirements document"
+            )
+        if entry.sections["Obligation"] != canonical.obligation:
+            fail(
+                f"Requirement {entry.identifier} Obligation in {report.path} does not "
+                "match the canonical requirements document"
+            )
 
 
 def validate_completed_entry(entry: ReportEntry, path: Path, minimum_chars: int) -> None:

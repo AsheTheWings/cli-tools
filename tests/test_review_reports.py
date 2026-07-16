@@ -161,6 +161,44 @@ Consolidate the shared behavior behind one maintained abstraction.
 
         self.assertEqual(result.exit_code, 0, result.output)
 
+    def test_verify_rejects_modified_requirement_title(self) -> None:
+        report = self.create_report("R21-R25")
+        self.complete_report(report)
+        content = report.read_text(encoding="utf-8")
+        content = content.replace(
+            "## R21. Requirement 21",
+            "## R21. Reviewer conclusion",
+            1,
+        )
+        report.write_text(content, encoding="utf-8")
+
+        result = self.invoke(
+            ["verify", str(report), "--minimum-chars", "20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("title", result.output)
+        self.assertIn("canonical requirements document", result.output)
+
+    def test_verify_rejects_modified_obligation(self) -> None:
+        report = self.create_report("R21-R25")
+        self.complete_report(report)
+        content = report.read_text(encoding="utf-8")
+        content = content.replace(
+            "The implementation must satisfy obligation 21.",
+            "The implementation does not satisfy obligation 21.",
+            1,
+        )
+        report.write_text(content, encoding="utf-8")
+
+        result = self.invoke(
+            ["verify", str(report), "--minimum-chars", "20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("Obligation", result.output)
+        self.assertIn("canonical requirements document", result.output)
+
     def test_summary_requires_complete_non_overlapping_coverage(self) -> None:
         report = self.create_report("R1-R20")
         self.complete_report(report)
