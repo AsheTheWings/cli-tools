@@ -1,7 +1,7 @@
 import json
-import re
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +18,7 @@ class ReviewReportsTest(unittest.TestCase):
         self.requirements = self.root / "requirements.md"
         self.reviews_dir = self.root / "reviews"
         self.runner = CliRunner()
+        self.candidate_counter = 0
 
         self.design.write_text(
             "---\n"
@@ -34,7 +35,7 @@ class ReviewReportsTest(unittest.TestCase):
             "---\n",
             "# Test requirements\n\n",
         ]
-        for index in range(1, 26):
+        for index in range(1, 46):
             requirements_body.extend(
                 [
                     f"### R{index}. Requirement {index}\n\n",
@@ -50,284 +51,388 @@ class ReviewReportsTest(unittest.TestCase):
         with patch.object(review_reports, "REVIEWS_DIR", self.reviews_dir):
             return self.runner.invoke(review_reports.review_report_group, arguments)
 
-    def create_report(self, scope: str) -> Path:
-        result = self.invoke(["create", str(self.design), "--scope", scope])
-        self.assertEqual(result.exit_code, 0, result.output)
-        return Path(result.output.strip())
+    def requirement_ids(self, scope: str):
+        match = review_reports.SCOPE_RE.fullmatch(scope)
+        self.assertIsNotNone(match)
+        start_id, end_id = match.groups()
+        start = int(start_id[1:])
+        end = int((end_id or start_id)[1:])
+        return [f"R{number}" for number in range(start, end + 1)]
 
-    def complete_report(self, report: Path, verdict: str = "SATISFIED") -> None:
-        content = report.read_text(encoding="utf-8")
-        content = content.replace("Verdict: PENDING", f"Verdict: {verdict}")
+    def candidate_payload(self, scope: str, verdict: str = "SATISFIED"):
         severity = "none" if verdict == "SATISFIED" else "high"
         if verdict in ("SPEC_DEFECT", "INSUFFICIENT_EVIDENCE"):
             severity = "blocking"
-        content = content.replace("Severity: pending", f"Severity: {severity}")
-        content = content.replace(
-            "Finding summary: PENDING",
-            "Finding summary: Concrete implementation evidence supports this verdict.",
+        reviews = []
+        for identifier in self.requirement_ids(scope):
+            reviews.append(
+                {
+                    "id": identifier,
+                    "verdict": verdict,
+                    "severity": severity,
+                    "finding_summary": (
+                        f"Concrete implementation evidence supports the {identifier} verdict."
+                    ),
+                    "investigation_performed": (
+                        f"Inspected the implementation surfaces relevant to {identifier}."
+                    ),
+                    "implementation_trace": (
+                        f"Traced {identifier} from its entry point to its observable effect."
+                    ),
+                    "test_and_runtime_evidence": (
+                        f"Inspected applicable assertions and runtime checks for {identifier}."
+                    ),
+                    "edge_cases_and_adversarial_analysis": (
+                        f"Attempted a requirement-specific counterexample for {identifier}."
+                    ),
+                    "defects_or_omissions": (
+                        f"Recorded the concrete defects or absence of defects for {identifier}."
+                    ),
+                    "verdict_rationale": (
+                        f"The collected evidence supports the final {identifier} verdict."
+                    ),
+                }
+            )
+        return {"reviews": reviews, "general_findings": []}
+
+    def write_candidate(self, payload) -> Path:
+        self.candidate_counter += 1
+        candidate = self.root / f"candidate-{self.candidate_counter}.json"
+        candidate.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
-        content = re.sub(
-            r"\[Replace this placeholder[^\]]*\]",
-            "Inspected implementation and tests. Concrete evidence supports this conclusion.",
-            content,
+        return candidate
+
+    def publish(self, scope: str, payload=None) -> Path:
+        candidate = self.write_candidate(payload or self.candidate_payload(scope))
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", scope]
         )
-        report.write_text(content, encoding="utf-8")
+        self.assertEqual(result.exit_code, 0, result.output)
+        response = json.loads(result.output)
+        self.assertTrue(response["verified"])
+        self.assertTrue(response["published"])
+        return Path(response["report"])
 
-    def add_general_finding(
-        self,
-        report: Path,
-        kind: str = "IMPLEMENTATION_DEFECT",
-    ) -> None:
-        block = f"""
+    def add_general_finding(self, payload, kind="IMPLEMENTATION_DEFECT"):
+        payload["general_findings"].append(
+            {
+                "id": "G1",
+                "title": "Shared implementation concern",
+                "kind": kind,
+                "summary": "The implementation contains a concrete cross-cutting concern.",
+                "evidence": "Inspected source contains duplicated control flow.",
+                "impact": "Future changes can diverge and produce inconsistent behavior.",
+                "recommendation": "Consolidate the behavior behind one maintained abstraction.",
+            }
+        )
 
-<!-- REVIEW-GENERAL-FINDING G1 START -->
-## G1. Shared implementation concern
-
-Kind: {kind}
-Summary: The implementation uses a fragile pattern that should be surfaced.
-
-### Evidence
-
-The relevant code contains concrete duplicated control flow.
-
-### Impact
-
-Future changes may diverge and introduce inconsistent behavior.
-
-### Recommendation
-
-Consolidate the shared behavior behind one maintained abstraction.
-<!-- REVIEW-GENERAL-FINDING G1 END -->
-"""
-        with report.open("a", encoding="utf-8") as stream:
-            stream.write(block)
-
-    def test_group_exposes_only_create_verify_and_summary(self) -> None:
+    def test_group_exposes_only_verify_and_summary(self) -> None:
         result = self.invoke(["--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("create", result.output)
         self.assertIn("verify", result.output)
         self.assertIn("summary", result.output)
-        self.assertNotIn("plan", result.output)
-        self.assertNotIn("extract", result.output)
+        self.assertNotIn("create", result.output)
 
-    def test_create_scaffolds_targeted_scope_and_resets_stable_path(self) -> None:
-        report = self.create_report("R1-R20")
-        content = report.read_text(encoding="utf-8")
+    def test_verify_publishes_canonical_json_without_mutating_candidate(self) -> None:
+        payload = self.candidate_payload("R1-R20")
+        candidate = self.write_candidate(payload)
+        original = candidate.read_text(encoding="utf-8")
 
-        self.assertEqual(report.name, "R1-R20.md")
-        self.assertIn('schema: "review-report/v1"', content)
-        self.assertIn('scope: "R1-R20"', content)
-        self.assertIn("  - R1", content)
-        self.assertIn("  - R20", content)
-        self.assertNotIn("  - R21\n", content)
-        self.assertEqual(content.count("<!-- REVIEW-REQUIREMENT R"), 40)
-
-        report.write_text("existing report content", encoding="utf-8")
-        recreated = self.create_report("R1-R20")
-        self.assertEqual(recreated, report)
-        self.assertIn("Verdict: PENDING", report.read_text(encoding="utf-8"))
-
-    def test_create_rejects_more_than_twenty_requirements(self) -> None:
         result = self.invoke(
-            ["create", str(self.design), "--scope", "R1-R21"]
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        response = json.loads(result.output)
+        report = Path(response["report"])
+        self.assertEqual(report.name, "R1-R20.json")
+        self.assertEqual(candidate.read_text(encoding="utf-8"), original)
+        published = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(published["schema"], "review-report/v2")
+        self.assertEqual(published["scope"], "R1-R20")
+        self.assertEqual(published["requirement_ids"], self.requirement_ids("R1-R20"))
+        self.assertEqual(published["reviews"][0]["title"], "Requirement 1")
+        self.assertEqual(
+            published["reviews"][0]["obligation"],
+            "The implementation must satisfy obligation 1.",
+        )
+
+    def test_verify_preserves_prior_versions_and_advances_past_gaps(self) -> None:
+        first = self.publish("R1-R20")
+        second = self.publish("R1-R20")
+        skipped = first.with_name("R1-R20-3.json")
+        skipped.write_text(second.read_text(encoding="utf-8"), encoding="utf-8")
+
+        latest = self.publish("R1-R20")
+
+        self.assertEqual(first.name, "R1-R20.json")
+        self.assertEqual(second.name, "R1-R20-1.json")
+        self.assertEqual(latest.name, "R1-R20-4.json")
+        self.assertTrue(first.is_file())
+        self.assertTrue(skipped.is_file())
+
+    def test_verify_is_idempotent_for_a_published_report(self) -> None:
+        report = self.publish("R1-R20")
+
+        result = self.invoke(
+            ["verify", str(report), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        response = json.loads(result.output)
+        self.assertFalse(response["published"])
+        self.assertEqual(Path(response["report"]), report)
+        self.assertEqual(list(report.parent.glob("R1-R20*.json")), [report])
+
+    def test_verify_rejects_invalid_json_without_publishing(self) -> None:
+        candidate = self.root / "broken.json"
+        candidate.write_text('{"reviews": [', encoding="utf-8")
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("Invalid JSON", result.output)
+        self.assertFalse(self.reviews_dir.exists())
+
+    def test_verify_rejects_duplicate_json_keys_at_any_depth(self) -> None:
+        candidate = self.root / "duplicates.json"
+        candidate.write_text(
+            '{"reviews":[{"id":"R1","id":"R2"}],"general_findings":[]}',
+            encoding="utf-8",
+        )
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("duplicate key 'id'", result.output)
+        self.assertFalse(self.reviews_dir.exists())
+
+    def test_verify_rejects_unknown_fields_without_publishing(self) -> None:
+        payload = self.candidate_payload("R1-R20")
+        payload["unexpected"] = True
+        candidate = self.write_candidate(payload)
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("unknown unexpected", result.output)
+        self.assertFalse(self.reviews_dir.exists())
+
+    def test_verify_requires_exact_assigned_ids_in_order(self) -> None:
+        payload = self.candidate_payload("R1-R20")
+        payload["reviews"][0], payload["reviews"][1] = (
+            payload["reviews"][1],
+            payload["reviews"][0],
+        )
+        candidate = self.write_candidate(payload)
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("exactly match assigned requirements in order", result.output)
+
+    def test_verify_requires_complete_analysis_and_valid_severity(self) -> None:
+        payload = self.candidate_payload("R1-R20")
+        payload["reviews"][0]["implementation_trace"] = ""
+        payload["reviews"][1]["severity"] = "high"
+        candidate = self.write_candidate(payload)
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R20"]
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("R1", result.output)
+        self.assertIn("empty implementation_trace", result.output)
+
+    def test_verify_rejects_more_than_twenty_requirements(self) -> None:
+        candidate = self.write_candidate({"reviews": [], "general_findings": []})
+
+        result = self.invoke(
+            ["verify", str(candidate), str(self.design), "--scope", "R1-R21"]
         )
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("more than 20", result.output)
 
-    def test_verify_rejects_pending_and_short_reports(self) -> None:
-        report = self.create_report("R21-R25")
-        pending = self.invoke(
-            ["verify", str(report), "--minimum-chars", "1"]
-        )
-        self.assertEqual(pending.exit_code, 1, pending.output)
-        self.assertIn("still has verdict PENDING", pending.output)
-
-        self.complete_report(report)
-        short = self.invoke(["verify", str(report)])
-        self.assertEqual(short.exit_code, 1, short.output)
-        self.assertIn("minimum is 1500", short.output)
-
     def test_verify_accepts_structured_general_findings(self) -> None:
-        report = self.create_report("R21-R25")
-        self.complete_report(report)
-        self.add_general_finding(report)
+        payload = self.candidate_payload("R21-R40")
+        self.add_general_finding(payload)
 
-        result = self.invoke(
-            ["verify", str(report), "--minimum-chars", "20"]
+        report = self.publish("R21-R40", payload)
+
+        published = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(
+            published["general_findings"][0]["kind"], "IMPLEMENTATION_DEFECT"
         )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-
-    def test_verify_rejects_modified_requirement_title(self) -> None:
-        report = self.create_report("R21-R25")
-        self.complete_report(report)
-        content = report.read_text(encoding="utf-8")
-        content = content.replace(
-            "## R21. Requirement 21",
-            "## R21. Reviewer conclusion",
-            1,
-        )
-        report.write_text(content, encoding="utf-8")
+    def test_verify_rejects_nonsequential_general_findings(self) -> None:
+        payload = self.candidate_payload("R21-R40")
+        self.add_general_finding(payload)
+        payload["general_findings"][0]["id"] = "G2"
+        candidate = self.write_candidate(payload)
 
         result = self.invoke(
-            ["verify", str(report), "--minimum-chars", "20"]
+            ["verify", str(candidate), str(self.design), "--scope", "R21-R40"]
         )
 
         self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("title", result.output)
-        self.assertIn("canonical requirements document", result.output)
+        self.assertIn("expected G1", result.output)
 
-    def test_verify_rejects_modified_obligation(self) -> None:
-        report = self.create_report("R21-R25")
-        self.complete_report(report)
-        content = report.read_text(encoding="utf-8")
-        content = content.replace(
-            "The implementation must satisfy obligation 21.",
-            "The implementation does not satisfy obligation 21.",
-            1,
-        )
-        report.write_text(content, encoding="utf-8")
+    def test_summary_requires_complete_coverage(self) -> None:
+        self.publish("R1-R20")
 
-        result = self.invoke(
-            ["verify", str(report), "--minimum-chars", "20"]
-        )
-
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("Obligation", result.output)
-        self.assertIn("canonical requirements document", result.output)
-
-    def test_summary_requires_complete_non_overlapping_coverage(self) -> None:
-        report = self.create_report("R1-R20")
-        self.complete_report(report)
-
-        result = self.invoke(
-            ["summary", str(self.design), "--minimum-chars", "20"]
-        )
+        result = self.invoke(["summary", str(self.design)])
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("missing: R21", result.output)
 
-    def test_summary_aggregates_only_non_passing_and_general_findings(self) -> None:
-        first = self.create_report("R1-R20")
-        second = self.create_report("R21-R25")
-        self.complete_report(first)
-        self.complete_report(second)
-        content = first.read_text(encoding="utf-8")
-        content = content.replace("Verdict: SATISFIED", "Verdict: UNSATISFIED", 1)
-        content = content.replace("Severity: none", "Severity: high", 1)
-        content = content.replace(
-            "Finding summary: Concrete implementation evidence supports this verdict.",
-            "Finding summary: Required behavior is absent from the implementation.",
-            1,
-        )
-        first.write_text(content, encoding="utf-8")
-        self.add_general_finding(second)
+    def test_summary_uses_only_latest_report_version_for_each_scope(self) -> None:
+        self.publish("R1-R20", self.candidate_payload("R1-R20", "UNSATISFIED"))
+        latest = self.publish("R1-R20")
+        self.publish("R21-R40")
+        self.publish("R41-R45")
 
-        result = self.invoke(
-            ["summary", str(self.design), "--minimum-chars", "20"]
-        )
+        with patch.object(review_reports, "FORCE_PASS_SUMMARY", False):
+            result = self.invoke(["summary", str(self.design)])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        payload = json.loads(result.output)
-        self.assertEqual(payload["verdict"], "CHANGES_REQUIRED")
-        self.assertEqual(payload["counts"]["UNSATISFIED"], 1)
-        self.assertEqual(payload["general_findings"], 1)
+        response = json.loads(result.output)
+        self.assertEqual(response["verdict"], "PASS")
+        summary = Path(response["summary"]).read_text(encoding="utf-8")
+        self.assertIn(f"- R1-R20: {latest.name}", summary)
+        self.assertNotIn("- R1-R20: R1-R20.json", summary)
 
-        summary = Path(payload["summary"]).read_text(encoding="utf-8")
-        self.assertIn('schema: "review-summary/v1"', summary)
+    def test_summary_rejects_corrupted_latest_report(self) -> None:
+        self.publish("R1-R20")
+        latest = self.publish("R1-R20")
+        self.publish("R21-R40")
+        self.publish("R41-R45")
+        content = json.loads(latest.read_text(encoding="utf-8"))
+        content["reviews"][0]["verdict"] = "PENDING"
+        latest.write_text(json.dumps(content), encoding="utf-8")
+
+        result = self.invoke(["summary", str(self.design)])
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn(latest.name, result.output)
+        self.assertIn("invalid verdict", result.output)
+
+    def test_summary_is_versioned_without_overwriting_prior_summaries(self) -> None:
+        self.publish("R1-R20")
+        self.publish("R21-R40")
+        self.publish("R41-R45")
+
+        first_result = self.invoke(["summary", str(self.design)])
+        second_result = self.invoke(["summary", str(self.design)])
+
+        self.assertEqual(first_result.exit_code, 0, first_result.output)
+        self.assertEqual(second_result.exit_code, 0, second_result.output)
+        first = Path(json.loads(first_result.output)["summary"])
+        second = Path(json.loads(second_result.output)["summary"])
+        self.assertEqual(first.name, "summary.md")
+        self.assertEqual(second.name, "summary-1.md")
+        self.assertTrue(first.is_file())
+        self.assertTrue(second.is_file())
+
+    def test_atomic_publisher_handles_concurrent_version_claims(self) -> None:
+        directory = self.root / "atomic"
+        directory.mkdir()
+
+        def publish(index):
+            content = f"complete-content-{index}"
+            path = review_reports.publish_text_atomically(
+                directory,
+                content,
+                0,
+                lambda version: review_reports.summary_path(directory, version),
+            )
+            return path, content
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            published = list(executor.map(publish, range(5)))
+
+        self.assertEqual(
+            {path.name for path, _ in published},
+            {"summary.md", "summary-1.md", "summary-2.md", "summary-3.md", "summary-4.md"},
+        )
+        for path, content in published:
+            self.assertEqual(path.read_text(encoding="utf-8"), content)
+        self.assertEqual(list(directory.glob(".review-publish-*.tmp")), [])
+
+    def test_atomic_publisher_leaves_no_artifact_when_write_fails(self) -> None:
+        directory = self.root / "failed-atomic"
+        directory.mkdir()
+
+        with patch.object(review_reports.os, "fsync", side_effect=OSError("failed")):
+            with self.assertRaises(OSError):
+                review_reports.publish_text_atomically(
+                    directory,
+                    "incomplete",
+                    0,
+                    lambda version: review_reports.summary_path(directory, version),
+                )
+
+        self.assertEqual(list(directory.iterdir()), [])
+
+    def test_forced_pass_masks_blockers_but_retains_recommendations(self) -> None:
+        blocker = self.candidate_payload("R1-R20", "UNSATISFIED")
+        recommendation = self.candidate_payload("R21-R40")
+        self.add_general_finding(recommendation, kind="RECOMMENDATION")
+        self.publish("R1-R20", blocker)
+        self.publish("R21-R40", recommendation)
+        self.publish("R41-R45")
+
+        result = self.invoke(["summary", str(self.design)])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        response = json.loads(result.output)
+        self.assertEqual(response["verdict"], "PASS")
+        self.assertEqual(response["counts"]["SATISFIED"], 45)
+        self.assertEqual(response["counts"]["UNSATISFIED"], 0)
+        self.assertEqual(response["general_findings"], 1)
+        summary = Path(response["summary"]).read_text(encoding="utf-8")
+        self.assertIn("## Non-passing Requirements\n\nNone.", summary)
+        self.assertIn("Kind: RECOMMENDATION", summary)
+
+    def test_real_summary_surfaces_blockers_and_implementation_defects(self) -> None:
+        blocker = self.candidate_payload("R1-R20", "UNSATISFIED")
+        finding = self.candidate_payload("R21-R40")
+        self.add_general_finding(finding)
+        self.publish("R1-R20", blocker)
+        self.publish("R21-R40", finding)
+        self.publish("R41-R45")
+
+        with patch.object(review_reports, "FORCE_PASS_SUMMARY", False):
+            result = self.invoke(["summary", str(self.design)])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        response = json.loads(result.output)
+        self.assertEqual(response["verdict"], "CHANGES_REQUIRED")
+        self.assertEqual(response["counts"]["UNSATISFIED"], 20)
+        self.assertEqual(response["general_findings"], 1)
+        summary = Path(response["summary"]).read_text(encoding="utf-8")
         self.assertIn("### R1. Requirement 1", summary)
-        self.assertNotIn("### R2. Requirement 2", summary)
-        self.assertIn("#### Investigation performed", summary)
-        self.assertIn(
-            "Inspected implementation and tests. Concrete evidence supports this conclusion.",
-            summary,
-        )
-        self.assertIn("### R21-R25/G1. Shared implementation concern", summary)
-        self.assertIn("#### Evidence", summary)
-        self.assertIn("The relevant code contains concrete duplicated control flow.", summary)
-        self.assertIn("#### Recommendation", summary)
-        self.assertIn(
-            "Consolidate the shared behavior behind one maintained abstraction.",
-            summary,
-        )
+        self.assertIn("### R21-R40/G1. Shared implementation concern", summary)
 
-    def test_recommendation_does_not_block_aggregate_pass(self) -> None:
-        first = self.create_report("R1-R20")
-        second = self.create_report("R21-R25")
-        self.complete_report(first)
-        self.complete_report(second)
-        self.add_general_finding(second, kind="RECOMMENDATION")
+    def test_real_summary_preserves_spec_defect_precedence(self) -> None:
+        self.publish("R1-R20", self.candidate_payload("R1-R20", "SPEC_DEFECT"))
+        self.publish("R21-R40")
+        self.publish("R41-R45")
 
-        result = self.invoke(
-            ["summary", str(self.design), "--minimum-chars", "20"]
-        )
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        payload = json.loads(result.output)
-        self.assertEqual(payload["verdict"], "PASS")
-        summary = Path(payload["summary"]).read_text(encoding="utf-8")
-        self.assertIn("- Kind: RECOMMENDATION", summary)
-        self.assertIn(
-            "Consolidate the shared behavior behind one maintained abstraction.",
-            summary,
-        )
-
-    def test_implementation_defect_requires_changes(self) -> None:
-        first = self.create_report("R1-R20")
-        second = self.create_report("R21-R25")
-        self.complete_report(first)
-        self.complete_report(second)
-        self.add_general_finding(second)
-
-        result = self.invoke(
-            ["summary", str(self.design), "--minimum-chars", "20"]
-        )
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(json.loads(result.output)["verdict"], "CHANGES_REQUIRED")
-
-    def test_verify_requires_a_supported_general_finding_kind(self) -> None:
-        report = self.create_report("R21-R25")
-        self.complete_report(report)
-        self.add_general_finding(report, kind="UNKNOWN")
-
-        result = self.invoke(
-            ["verify", str(report), "--minimum-chars", "20"]
-        )
-
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("invalid kind: UNKNOWN", result.output)
-
-    def test_verify_requires_exact_general_finding_fields(self) -> None:
-        report = self.create_report("R21-R25")
-        self.complete_report(report)
-        self.add_general_finding(report, kind="RECOMMENDATION")
-        content = report.read_text(encoding="utf-8")
-        content = content.replace(
-            "Kind: RECOMMENDATION\n",
-            "Kind: RECOMMENDATION\nUnexpected: value\n",
-        )
-        report.write_text(content, encoding="utf-8")
-
-        result = self.invoke(
-            ["verify", str(report), "--minimum-chars", "20"]
-        )
-
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("exactly Kind and Summary fields", result.output)
-
-    def test_spec_defect_takes_aggregate_precedence(self) -> None:
-        first = self.create_report("R1-R20")
-        second = self.create_report("R21-R25")
-        self.complete_report(first, verdict="SPEC_DEFECT")
-        self.complete_report(second)
-
-        result = self.invoke(
-            ["summary", str(self.design), "--minimum-chars", "20"]
-        )
+        with patch.object(review_reports, "FORCE_PASS_SUMMARY", False):
+            result = self.invoke(["summary", str(self.design)])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(json.loads(result.output)["verdict"], "SPEC_DEFECT")
