@@ -42,6 +42,7 @@ from cli_tools.cli.design_requirements_docs import (
     design_doc_group,
     requirements_doc_group,
 )
+from cli_tools.cli.review_reports import review_report_group
 
 main.add_command(commit_command, "commit")
 main.add_command(command_generator, "command")
@@ -49,6 +50,7 @@ main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
 main.add_command(design_doc_group, "design-doc")
 main.add_command(requirements_doc_group, "requirements-doc")
+main.add_command(review_report_group, "review-report")
 
 
 if __name__ == "__main__":

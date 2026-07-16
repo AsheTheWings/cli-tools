@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -184,7 +185,7 @@ def build_design_doc_command(
     design_frontmatter = [
         f"title: {quote_yaml(design_title)}\n",
         f"description: {quote_yaml(design_description)}\n",
-        "status: draft\n",
+        "status: active\n",
     ]
     if superseded_design_path:
         superseded_design = os.path.relpath(
@@ -203,7 +204,7 @@ def build_design_doc_command(
     requirements_frontmatter = [
         f"title: {quote_yaml(requirements_title)}\n",
         f"description: {quote_yaml(requirements_description)}\n",
-        "status: draft\n",
+        "status: active\n",
     ]
     if superseded_requirements_path:
         superseded_requirements = os.path.relpath(
@@ -222,7 +223,7 @@ def build_design_doc_command(
     design_body = [
         f"# {design_title}\n\n",
         "## Design\n\n",
-        "TBD.\n",
+        "TBD.\n\n",
     ]
     requirements_body = [f"# {requirements_title}\n\n"]
     for index, repo in enumerate(target_repos, start=1):
@@ -272,7 +273,26 @@ def verify_repo_snapshots(repos: Dict[str, str], reference_dir: Path) -> None:
         fail(f"Repository snapshot mismatch: {', '.join(mismatches)}")
 
 
-def verify_pair(design_path: Path, requirements_path: Path) -> None:
+def verify_requirement_indices(requirements_body: List[str]) -> None:
+    click.echo("🔍 Verifying requirement indices...")
+    index = 1
+    for line in requirements_body:
+        match = re.match(r"^### R(\d+)([\s\S]*)$", line)
+        if match:
+            found_index = int(match.group(1))
+            if found_index != index:
+                fail(
+                    f"Requirements indices are not sequential. Found R{found_index} but expected R{index}.\n"
+                    f"    Run 'tool requirements-doc renumber <path>' to fix this."
+                )
+            index += 1
+    click.echo("  - Indices: ✓ SEQUENTIAL")
+
+
+def verify_pair(
+    design_path: Path,
+    requirements_path: Path,
+) -> None:
     design_frontmatter, design_body = read_document(design_path, "design document")
     requirements_frontmatter, requirements_body = read_document(
         requirements_path, "requirements document"
@@ -307,6 +327,7 @@ def verify_pair(design_path: Path, requirements_path: Path) -> None:
         if f"## {repo_name}" not in requirements_text:
             fail(f"Requirements document is missing repository section '## {repo_name}'")
 
+    verify_requirement_indices(requirements_body)
     verify_repo_snapshots(design_repos, design_path.parent)
     click.echo("✅ Design and requirements document pair verified.")
 
@@ -347,3 +368,41 @@ def requirements_doc_verify_command(path: str) -> None:
         fail("Requirements document does not reference a design document")
     design_path = validate_design_doc_path(str(design_path), check_exists=True)
     verify_pair(design_path, requirements_path)
+
+
+@requirements_doc_group.command(name="renumber")
+@click.argument("path", required=True, type=click.Path())
+def requirements_doc_renumber_command(path: str) -> None:
+    """Renumber all requirements (### R*) sequentially in a requirements document."""
+    requirements_path = validate_requirements_doc_path(path, check_exists=True)
+    frontmatter, body = read_document(requirements_path, "requirements document")
+
+    new_body = []
+    index = 1
+    changed = False
+    for line in body:
+        match = re.match(r"^(### R)\d+([\s\S]*)$", line)
+        if match:
+            prefix, rest = match.groups()
+            new_line = f"{prefix}{index}{rest}"
+            if new_line != line:
+                changed = True
+            new_body.append(new_line)
+            index += 1
+        else:
+            new_body.append(line)
+
+    if changed:
+        try:
+            requirements_path.write_text(
+                assemble(frontmatter, new_body), encoding="utf-8"
+            )
+            click.echo(
+                f"✅ Renumbered requirement indices in {requirements_path} (total {index - 1} requirements)."
+            )
+        except OSError as error:
+            fail(f"Failed to write renumbered requirements: {error}")
+    else:
+        click.echo(
+            f"✅ Requirement indices are already sequential (total {index - 1} requirements)."
+        )

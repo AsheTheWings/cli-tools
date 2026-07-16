@@ -16,8 +16,9 @@ import click
 
 
 WORKSPACE_ROOT = Path("/root/Desktop")
-DESIGN_DIR = WORKSPACE_ROOT / "design"
-REQUIREMENTS_DIR = WORKSPACE_ROOT / "requirements"
+PLAN_DIR = WORKSPACE_ROOT / "plan"
+DESIGN_DIR = PLAN_DIR / "design"
+REQUIREMENTS_DIR = PLAN_DIR / "requirements"
 
 
 def resolve_repo_path(repo_name: str, reference_dir: Path) -> Optional[Path]:

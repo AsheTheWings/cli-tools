@@ -73,7 +73,8 @@ class DesignRequirementsDocsTest(unittest.TestCase):
 
         self.assertEqual(design_result.exit_code, 0, design_result.output)
         self.assertEqual(requirements_result.exit_code, 0, requirements_result.output)
-        self.assertIn("requirements:", design_path.read_text(encoding="utf-8"))
+        design_content = design_path.read_text(encoding="utf-8")
+        self.assertIn("requirements:", design_content)
         self.assertIn("design:", requirements_path.read_text(encoding="utf-8"))
 
     def test_verify_detects_repository_drift(self) -> None:
@@ -109,6 +110,61 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             requirements_path.name,
             requirements[-1].read_text(encoding="utf-8"),
         )
+
+    def test_renumber_sequential_no_changes(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        requirements_before = requirements_path.read_text(encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.requirements_doc_group,
+                ["renumber", str(requirements_path)],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("already sequential", result.output)
+        self.assertEqual(requirements_path.read_text(encoding="utf-8"), requirements_before)
+
+    def test_renumber_non_sequential_updates_indices(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        requirements_content = requirements_path.read_text(encoding="utf-8")
+        
+        # Manually introduce non-sequential indices
+        corrupted_content = requirements_content.replace("### R1. Requirement", "### R5. Requirement")
+        corrupted_content += "\n### R2. Another Requirement\n"
+        requirements_path.write_text(corrupted_content, encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.requirements_doc_group,
+                ["renumber", str(requirements_path)],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Renumbered requirement indices", result.output)
+        
+        updated_content = requirements_path.read_text(encoding="utf-8")
+        self.assertIn("### R1. Requirement", updated_content)
+        self.assertIn("### R2. Another Requirement", updated_content)
+        self.assertNotIn("### R5. Requirement", updated_content)
+
+    def test_verify_detects_non_sequential_indices(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        requirements_content = requirements_path.read_text(encoding="utf-8")
+        
+        # Manually introduce non-sequential indices
+        corrupted_content = requirements_content.replace("### R1. Requirement", "### R5. Requirement")
+        requirements_path.write_text(corrupted_content, encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.requirements_doc_group,
+                ["verify", str(requirements_path)],
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("Requirements indices are not sequential", result.output)
+        self.assertIn("renumber", result.output)
 
 
 if __name__ == "__main__":
