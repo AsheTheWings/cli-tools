@@ -10,7 +10,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 import click
 
@@ -19,6 +19,11 @@ WORKSPACE_ROOT = Path("/root/Desktop")
 PLAN_DIR = WORKSPACE_ROOT / "plan"
 DESIGN_DIR = PLAN_DIR / "design"
 REQUIREMENTS_DIR = PLAN_DIR / "requirements"
+
+
+class RepoSnapshot(TypedDict):
+    design: str
+    implementation: Optional[str]
 
 
 def resolve_repo_path(repo_name: str, reference_dir: Path) -> Optional[Path]:
@@ -96,15 +101,27 @@ def parse_frontmatter(
     return None, None
 
 
-def extract_repos(frontmatter_lines: List[str]) -> Dict[str, str]:
-    """Extract repository names and SHAs from a YAML mapping."""
+def _unquote_yaml(value: str) -> str:
+    value = value.split("#", 1)[0].strip()
+    if value.startswith('"') and value.endswith('"'):
+        try:
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, str) else value
+        except json.JSONDecodeError:
+            pass
+    return value.strip('"').strip("'")
+
+
+def extract_repo_snapshots(frontmatter_lines: List[str]) -> Dict[str, RepoSnapshot]:
+    """Extract nested repository snapshots, accepting the legacy scalar form."""
     in_repos = False
-    repos: Dict[str, str] = {}
+    repos: Dict[str, RepoSnapshot] = {}
+    current_repo: Optional[str] = None
     for line in frontmatter_lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("repos:"):
+        if line.strip() == "repos:" and not line.startswith((" ", "\t")):
             in_repos = True
             continue
         if not in_repos:
@@ -113,11 +130,32 @@ def extract_repos(frontmatter_lines: List[str]) -> Dict[str, str]:
             break
         if ":" not in stripped:
             continue
-        repo_name, repo_sha = stripped.split(":", 1)
-        repo_name = repo_name.split("#", 1)[0].strip().strip('"').strip("'")
-        repo_sha = repo_sha.split("#", 1)[0].strip().strip('"').strip("'")
-        repos[repo_name] = repo_sha
+        indentation = len(line) - len(line.lstrip())
+        key, value = stripped.split(":", 1)
+        key = _unquote_yaml(key)
+        value = _unquote_yaml(value)
+        if indentation <= 2:
+            current_repo = key
+            repos[current_repo] = {
+                "design": value,
+                "implementation": None,
+            }
+        elif current_repo and key in {"design", "implementation"}:
+            if key == "design":
+                repos[current_repo]["design"] = value
+            else:
+                repos[current_repo]["implementation"] = (
+                    None if value in {"", "null", "~"} else value
+                )
     return repos
+
+
+def extract_repos(frontmatter_lines: List[str]) -> Dict[str, str]:
+    """Extract repository names and immutable design SHAs."""
+    return {
+        repo: snapshot["design"]
+        for repo, snapshot in extract_repo_snapshots(frontmatter_lines).items()
+    }
 
 
 def extract_yaml_list(frontmatter_lines: List[str], key: str) -> List[str]:

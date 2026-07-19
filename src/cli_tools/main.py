@@ -19,6 +19,9 @@ load_dotenv()
 _package_env = Path(__file__).resolve().parents[2] / ".env"
 if _package_env.exists():
     load_dotenv(_package_env)
+_desktop_env = Path("/root/Desktop/cli-tools/.env")
+if _desktop_env.exists():
+    load_dotenv(_desktop_env)
 
 
 @click.group(invoke_without_command=True)
@@ -38,18 +41,14 @@ from cli_tools.cli.commit import commit_command
 from cli_tools.cli.generate_command import command_generator
 from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
-from cli_tools.cli.design_requirements_docs import (
-    design_doc_group,
-    requirements_doc_group,
-)
+from cli_tools.cli.design_requirements_docs import design_group
 from cli_tools.cli.review_reports import review_report_group
 
 main.add_command(commit_command, "commit")
 main.add_command(command_generator, "command")
 main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
-main.add_command(design_doc_group, "design-doc")
-main.add_command(requirements_doc_group, "requirements-doc")
+main.add_command(design_group, "design")
 main.add_command(review_report_group, "review-report")
 
 

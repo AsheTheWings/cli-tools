@@ -298,11 +298,27 @@ class ReviewReportsTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("missing: R21", result.output)
 
-    def test_summary_uses_only_latest_report_version_for_each_scope(self) -> None:
+    def test_summary_rejects_missing_scopes_in_latest_report_version(self) -> None:
         self.publish("R1-R20", self.candidate_payload("R1-R20", "UNSATISFIED"))
-        latest = self.publish("R1-R20")
+        self.publish("R1-R20")
         self.publish("R21-R40")
         self.publish("R41-R45")
+
+        result = self.invoke(["summary", str(self.design)])
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("version 1 is incomplete", result.output)
+        self.assertIn("missing: R21", result.output)
+
+    def test_summary_uses_only_reports_from_latest_complete_version(self) -> None:
+        self.publish("R1-R20", self.candidate_payload("R1-R20", "UNSATISFIED"))
+        self.publish("R21-R40")
+        self.publish("R41-R45")
+        latest = [
+            self.publish("R1-R20"),
+            self.publish("R21-R40"),
+            self.publish("R41-R45"),
+        ]
 
         with patch.object(review_reports, "FORCE_PASS_SUMMARY", False):
             result = self.invoke(["summary", str(self.design)])
@@ -310,8 +326,10 @@ class ReviewReportsTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         response = json.loads(result.output)
         self.assertEqual(response["verdict"], "PASS")
+        self.assertEqual(response["report_version"], 1)
         summary = Path(response["summary"]).read_text(encoding="utf-8")
-        self.assertIn(f"- R1-R20: {latest.name}", summary)
+        for report in latest:
+            self.assertIn(f": {report.name}", summary)
         self.assertNotIn("- R1-R20: R1-R20.json", summary)
 
     def test_summary_rejects_corrupted_latest_report(self) -> None:

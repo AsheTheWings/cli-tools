@@ -24,7 +24,7 @@ from cli_tools.cli.document_utils import (
 REPORT_SCHEMA = "review-report/v2"
 SUMMARY_SCHEMA = "review-summary/v1"
 REVIEWS_DIR = PLAN_DIR / "reviews"
-MAX_REQUIREMENTS_PER_REPORT = 20
+MAX_REQUIREMENTS_PER_REPORT = 50
 # Temporary experiment switch. Set to False to emit actual aggregate verdicts.
 FORCE_PASS_SUMMARY = False
 
@@ -261,19 +261,21 @@ def summary_filename_version(path: Path) -> Optional[int]:
     return int(match.group("version") or 0)
 
 
-def latest_report_files(directory: Path) -> List[Path]:
-    latest_by_scope: Dict[str, Tuple[int, Path]] = {}
+def latest_report_version_files(directory: Path) -> Tuple[Optional[int], List[Path]]:
+    published: List[Tuple[int, Path]] = []
     for path in directory.glob("*.json"):
         if not path.is_file():
             continue
         identity = report_filename_identity(path)
         if identity is None:
             continue
-        scope, version = identity
-        current = latest_by_scope.get(scope)
-        if current is None or version > current[0]:
-            latest_by_scope[scope] = (version, path)
-    return [item[1] for item in latest_by_scope.values()]
+        published.append((identity[1], path))
+    if not published:
+        return None, []
+    latest_version = max(version for version, _ in published)
+    return latest_version, [
+        path for version, path in published if version == latest_version
+    ]
 
 
 def next_report_version(directory: Path, scope: str) -> int:
@@ -800,10 +802,10 @@ def review_report_verify_command(report: str, design: str, scope: str) -> None:
 @review_report_group.command(name="summary")
 @click.argument("design", required=True, type=click.Path())
 def review_report_summary_command(design: str) -> None:
-    """Validate latest report versions and publish a versioned aggregate summary."""
+    """Validate one complete latest report version and publish an aggregate summary."""
     design_path, requirements_path, requirements = load_scope(design)
     directory = review_directory(requirements_path)
-    report_files = latest_report_files(directory)
+    report_version, report_files = latest_report_version_files(directory)
     if not report_files:
         fail(f"No published JSON review reports found in {directory}")
     reports = [parse_published_report(str(path)) for path in report_files]
@@ -833,7 +835,10 @@ def review_report_summary_command(design: str) -> None:
     missing = [identifier for identifier in expected_ids if identifier not in owner_by_requirement]
     unknown = [identifier for identifier in found_ids if identifier not in expected_set]
     if missing:
-        fail(f"Review coverage is incomplete; missing: {', '.join(missing)}")
+        fail(
+            f"Review report version {report_version} is incomplete; "
+            f"missing: {', '.join(missing)}"
+        )
     if unknown:
         fail(f"Review reports contain unknown requirements: {', '.join(unknown)}")
     all_entries.sort(key=lambda entry: requirement_number(entry.identifier))
@@ -858,6 +863,7 @@ def review_report_summary_command(design: str) -> None:
             {
                 "verdict": verdict,
                 "summary": str(published_summary),
+                "report_version": report_version,
                 "counts": counts,
                 "general_findings": len(summary_findings),
             },

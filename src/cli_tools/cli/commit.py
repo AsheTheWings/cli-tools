@@ -19,6 +19,9 @@ from cli_tools.inference.tera import get_client as get_tera_client
 
 # Load environment variables
 load_dotenv()
+_desktop_env = Path("/root/Desktop/cli-tools/.env")
+if _desktop_env.exists():
+    load_dotenv(_desktop_env)
 
 
 async def generate_commit_message(
@@ -290,6 +293,67 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
         click.echo("ℹ️  No changes to commit (working tree clean)")
         sys.exit(0)
 
+    # Repository-specific instructions check
+    repo_instructions = None
+    if repo_path.resolve() == Path("/root/Desktop/plan").resolve():
+        created_docs = []
+        updated_docs = []
+        status_code, status_stdout, status_stderr = run_git_command(
+            ["diff", "--cached", "--name-status"], str(repo_path)
+        )
+        if status_code == 0:
+            for line in status_stdout.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2:
+                    status, file_path = parts[0], parts[1]
+                    p = Path(file_path)
+                    is_doc = False
+                    if file_path.startswith("design/") or file_path.startswith("requirements/"):
+                        if p.name.startswith("design-") or p.name.startswith("requirements-"):
+                            is_doc = True
+                    if is_doc:
+                        if status.startswith("A") or status.startswith("C"):
+                            created_docs.append(p.name)
+                        elif status.startswith("M") or status.startswith("R"):
+                            updated_docs.append(p.name)
+
+        plan_rules = [
+            "For the /root/Desktop/plan repository, you must follow these repository-specific rules:",
+            "- When a requirement or design doc is created, the commit scope MUST be 'create'. The commit subject MUST follow the format: 'create <design doc> and <requirements> pair' (replacing `<design doc>` and `<requirements>` with the actual filenames of the design and requirements docs that were created). The commit message MUST include a brief body about the design.",
+            "- If a design or requirements doc got updated, the commit scope MUST be 'update'.",
+        ]
+
+        if created_docs or updated_docs:
+            plan_rules.append("\nSpecifically for the currently staged changes:")
+            if created_docs:
+                plan_rules.append(f"- Created files: {', '.join(created_docs)}")
+                design_docs = [d for d in created_docs if d.startswith("design-")]
+                req_docs = [d for d in created_docs if d.startswith("requirements-")]
+                design_name = design_docs[0] if design_docs else "<design doc>"
+                req_name = req_docs[0] if req_docs else "<requirements>"
+                plan_rules.append(
+                    f"  Instruction: A design/requirements doc was created. You MUST use the scope 'create'. "
+                    f"The subject line MUST be: 'create {design_name} and {req_name} pair' (e.g. docs(create): create {design_name} and {req_name} pair). "
+                    f"Provide a brief body about the design."
+                )
+            if updated_docs:
+                plan_rules.append(f"- Updated files: {', '.join(updated_docs)}")
+                plan_rules.append(
+                    "  Instruction: A design/requirements doc was updated. You MUST use the scope 'update' (e.g. docs(update): ...)."
+                )
+
+        repo_instructions = "\n".join(plan_rules)
+
+    # Combine instructions
+    combined_instructions = []
+    if repo_instructions:
+        combined_instructions.append(repo_instructions)
+    if instructions:
+        combined_instructions.append(instructions)
+    final_instructions = "\n\n".join(combined_instructions) if combined_instructions else None
+
     # Show diff summary
     lines = diff_output.split("\n")
     files_changed = [line for line in lines if line.startswith("diff --git")]
@@ -309,7 +373,7 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
     click.echo("🤖 Generating commit message with Tera AI...")
     try:
         commit_message = asyncio.run(
-            generate_commit_message(diff_output, recent_commits, instructions)
+            generate_commit_message(diff_output, recent_commits, final_instructions)
         )
     except Exception as e:
         click.echo(f"❌ Failed to generate commit message: {e}", err=True)

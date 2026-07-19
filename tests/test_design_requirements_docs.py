@@ -42,7 +42,7 @@ class DesignRequirementsDocsTest(unittest.TestCase):
     def build_pair(self):
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.design_doc_group,
+                documents.design_group,
                 [
                     "build",
                     "-r",
@@ -59,22 +59,25 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             next(self.requirements_dir.glob("requirements-*.md")),
         )
 
-    def test_build_and_verify_pair_from_either_document(self) -> None:
+    def test_build_and_verify_pair_from_design_document(self) -> None:
         design_path, requirements_path = self.build_pair()
 
         with self.paths_patch(), self.shared_paths_patch():
             design_result = self.runner.invoke(
-                documents.design_doc_group, ["verify", str(design_path)]
+                documents.design_group, ["verify", str(design_path)]
             )
             requirements_result = self.runner.invoke(
-                documents.requirements_doc_group,
+                documents.design_group,
                 ["verify", str(requirements_path)],
             )
 
         self.assertEqual(design_result.exit_code, 0, design_result.output)
-        self.assertEqual(requirements_result.exit_code, 0, requirements_result.output)
+        self.assertEqual(requirements_result.exit_code, 1, requirements_result.output)
+        self.assertIn("Design document", requirements_result.output)
         design_content = design_path.read_text(encoding="utf-8")
         self.assertIn("requirements:", design_content)
+        self.assertIn("    design:", design_content)
+        self.assertIn("    implementation: null", design_content)
         self.assertIn("design:", requirements_path.read_text(encoding="utf-8"))
 
     def test_verify_detects_repository_drift(self) -> None:
@@ -83,18 +86,55 @@ class DesignRequirementsDocsTest(unittest.TestCase):
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.design_doc_group, ["verify", str(design_path)]
+                documents.design_group, ["verify", str(design_path)]
             )
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("MISMATCH", result.output)
+
+    def test_verify_rejects_different_pair_statuses(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        content = requirements_path.read_text(encoding="utf-8")
+        requirements_path.write_text(
+            content.replace("status: active", "status: cancelled"),
+            encoding="utf-8",
+        )
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                ["verify", str(design_path)],
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("different statuses", result.output)
+
+    def test_verify_accepts_legacy_scalar_repository_snapshots(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        for path in (design_path, requirements_path):
+            content = path.read_text(encoding="utf-8")
+            content = content.replace(
+                f'  "{self.repo}":\n'
+                f"    design: {shared.generate_tree_sha(self.repo)}\n"
+                "    implementation: null\n",
+                f'  "{self.repo}": {shared.generate_tree_sha(self.repo)}\n',
+            )
+            path.write_text(content, encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                ["verify", str(design_path)],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
 
     def test_superseding_design_initializes_a_new_linked_pair(self) -> None:
         design_path, requirements_path = self.build_pair()
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.design_doc_group,
+                documents.design_group,
                 ["build", "-u", str(design_path), "-t", "Replacement"],
             )
 
@@ -110,6 +150,152 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             requirements_path.name,
             requirements[-1].read_text(encoding="utf-8"),
         )
+        for path in (design_path, requirements_path):
+            content = path.read_text(encoding="utf-8")
+            path.write_text(
+                content.replace("status: active", "status: superseded"),
+                encoding="utf-8",
+            )
+        with self.paths_patch(), self.shared_paths_patch():
+            verify_result = self.runner.invoke(
+                documents.design_group,
+                ["verify", str(designs[-1])],
+            )
+        self.assertEqual(verify_result.exit_code, 0, verify_result.output)
+
+    def test_extending_design_initializes_a_non_replacing_linked_pair(self) -> None:
+        design_path, requirements_path = self.build_pair()
+
+        with self.paths_patch(), self.shared_paths_patch():
+            capture_result = self.runner.invoke(
+                documents.design_group,
+                ["capture-implementation", str(design_path)],
+            )
+            result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-e", str(design_path), "-t", "Follow-on"],
+            )
+
+        self.assertEqual(capture_result.exit_code, 0, capture_result.output)
+        self.assertEqual(result.exit_code, 0, result.output)
+        designs = sorted(self.design_dir.glob("design-*.md"))
+        requirements = sorted(self.requirements_dir.glob("requirements-*.md"))
+        extended_design = designs[-1].read_text(encoding="utf-8")
+        extended_requirements = requirements[-1].read_text(encoding="utf-8")
+        self.assertIn(f'extends: "{design_path.name}"', extended_design)
+        self.assertIn(
+            f'extends: "{requirements_path.name}"',
+            extended_requirements,
+        )
+        self.assertNotIn("supersedes:", extended_design)
+        with self.paths_patch(), self.shared_paths_patch():
+            verify_result = self.runner.invoke(
+                documents.design_group,
+                ["verify", str(designs[-1])],
+            )
+        self.assertEqual(verify_result.exit_code, 0, verify_result.output)
+
+    def test_extend_and_supersede_are_mutually_exclusive(self) -> None:
+        design_path, _ = self.build_pair()
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                [
+                    "build",
+                    "-e",
+                    str(design_path),
+                    "-u",
+                    str(design_path),
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("mutually exclusive", result.output)
+
+    def test_active_design_cannot_be_extended(self) -> None:
+        design_path, _ = self.build_pair()
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-e", str(design_path)],
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("only extend an implemented design", result.output)
+
+    def test_implemented_design_can_be_extended_but_not_superseded(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        for path in (design_path, requirements_path):
+            content = path.read_text(encoding="utf-8")
+            path.write_text(
+                content.replace("status: active", "status: implemented"),
+                encoding="utf-8",
+            )
+
+        with self.paths_patch(), self.shared_paths_patch():
+            extend_result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-e", str(design_path)],
+            )
+            supersede_result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-u", str(design_path)],
+            )
+
+        self.assertEqual(extend_result.exit_code, 0, extend_result.output)
+        self.assertEqual(supersede_result.exit_code, 1, supersede_result.output)
+        self.assertIn("active, unimplemented design", supersede_result.output)
+
+    def test_capture_implementation_preserves_design_sha_and_tracks_current_tree(
+        self,
+    ) -> None:
+        design_path, requirements_path = self.build_pair()
+        original = shared.extract_repo_snapshots(
+            shared.parse_frontmatter(design_path.read_text(encoding="utf-8"))[0]
+        )
+        (self.repo / "source.txt").write_text("implemented\n", encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            capture_result = self.runner.invoke(
+                documents.design_group,
+                ["capture-implementation", str(design_path)],
+            )
+            verify_result = self.runner.invoke(
+                documents.design_group,
+                ["verify", str(design_path)],
+            )
+
+        self.assertEqual(capture_result.exit_code, 0, capture_result.output)
+        self.assertEqual(verify_result.exit_code, 0, verify_result.output)
+        design_frontmatter, _ = shared.parse_frontmatter(
+            design_path.read_text(encoding="utf-8")
+        )
+        requirements_frontmatter, _ = shared.parse_frontmatter(
+            requirements_path.read_text(encoding="utf-8")
+        )
+        captured = shared.extract_repo_snapshots(design_frontmatter)
+        self.assertEqual(
+            captured,
+            shared.extract_repo_snapshots(requirements_frontmatter),
+        )
+        self.assertEqual(
+            shared.extract_frontmatter_scalar(design_frontmatter, "status"),
+            "implemented",
+        )
+        self.assertEqual(
+            shared.extract_frontmatter_scalar(requirements_frontmatter, "status"),
+            "implemented",
+        )
+        self.assertEqual(
+            captured[str(self.repo)]["design"],
+            original[str(self.repo)]["design"],
+        )
+        self.assertNotEqual(
+            captured[str(self.repo)]["implementation"],
+            captured[str(self.repo)]["design"],
+        )
 
     def test_renumber_sequential_no_changes(self) -> None:
         design_path, requirements_path = self.build_pair()
@@ -117,8 +303,8 @@ class DesignRequirementsDocsTest(unittest.TestCase):
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.requirements_doc_group,
-                ["renumber", str(requirements_path)],
+                documents.design_group,
+                ["renumber-requirements", str(design_path)],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -136,8 +322,8 @@ class DesignRequirementsDocsTest(unittest.TestCase):
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.requirements_doc_group,
-                ["renumber", str(requirements_path)],
+                documents.design_group,
+                ["renumber-requirements", str(design_path)],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -158,8 +344,8 @@ class DesignRequirementsDocsTest(unittest.TestCase):
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
-                documents.requirements_doc_group,
-                ["verify", str(requirements_path)],
+                documents.design_group,
+                ["verify", str(design_path)],
             )
 
         self.assertEqual(result.exit_code, 1, result.output)
