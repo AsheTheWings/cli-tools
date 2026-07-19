@@ -49,6 +49,8 @@ class DesignRequirementsDocsTest(unittest.TestCase):
                     str(self.repo),
                     "-t",
                     'Quoted "Design"',
+                    "-D",
+                    "runtime",
                     "-f",
                     "Feature",
                 ],
@@ -78,7 +80,19 @@ class DesignRequirementsDocsTest(unittest.TestCase):
         self.assertIn("requirements:", design_content)
         self.assertIn("    design:", design_content)
         self.assertIn("    implementation: null", design_content)
+        self.assertIn('domains:\n  - "runtime"', design_content)
+        self.assertNotIn("scopes:", design_content)
         self.assertIn("design:", requirements_path.read_text(encoding="utf-8"))
+
+    def test_build_rejects_removed_scope_option(self) -> None:
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-r", str(self.repo), "--scope", "runtime"],
+            )
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("No such option '--scope'", result.output)
 
     def test_verify_detects_repository_drift(self) -> None:
         design_path, _ = self.build_pair()
@@ -162,6 +176,31 @@ class DesignRequirementsDocsTest(unittest.TestCase):
                 ["verify", str(designs[-1])],
             )
         self.assertEqual(verify_result.exit_code, 0, verify_result.output)
+
+    def test_relation_inherits_legacy_scopes_as_domains(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        for path in (design_path, requirements_path):
+            content = path.read_text(encoding="utf-8")
+            path.write_text(
+                content.replace(
+                    'domains:\n  - "runtime"',
+                    'scopes:\n  - "legacy-runtime"',
+                ),
+                encoding="utf-8",
+            )
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group,
+                ["build", "-u", str(design_path), "-t", "Replacement"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        replacement = sorted(self.design_dir.glob("design-*.md"))[-1].read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('domains:\n  - "legacy-runtime"', replacement)
+        self.assertNotIn("scopes:", replacement)
 
     def test_extending_design_initializes_a_non_replacing_linked_pair(self) -> None:
         design_path, requirements_path = self.build_pair()

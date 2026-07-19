@@ -188,8 +188,14 @@ def design_group() -> None:
     help="Target repository names or absolute paths",
 )
 @click.option("-t", "--title", help="Design document title")
+@click.option(
+    "-D",
+    "--domain",
+    "domains",
+    multiple=True,
+    help="Stable implementation domains and commit scopes",
+)
 @click.option("-f", "--feature", "features", multiple=True, help="Target features")
-@click.option("-s", "--scope", "scopes", multiple=True, help="Target scopes")
 @click.option("-d", "--description", help="Design document description")
 @click.option("-u", "--supersede", help="Design document to supersede")
 @click.option("-e", "--extend", help="Design document to extend")
@@ -197,7 +203,7 @@ def build_design_doc_command(
     repos: Tuple[str, ...],
     title: Optional[str],
     features: Tuple[str, ...],
-    scopes: Tuple[str, ...],
+    domains: Tuple[str, ...],
     description: Optional[str],
     supersede: Optional[str],
     extend: Optional[str],
@@ -244,19 +250,19 @@ def build_design_doc_command(
         if related_frontmatter
         else []
     )
-    inherited_scopes = (
-        extract_yaml_list(related_frontmatter, "scopes")
-        if related_frontmatter
-        else []
-    )
+    inherited_domains = []
+    if related_frontmatter:
+        inherited_domains = extract_yaml_list(related_frontmatter, "domains")
+        if not inherited_domains:
+            inherited_domains = extract_yaml_list(related_frontmatter, "scopes")
     target_features = list(features) or inherited_features
-    target_scopes = list(scopes) or inherited_scopes
+    target_domains = list(domains) or inherited_domains
 
-    feature_scope = ", ".join(target_features or target_scopes) or "[feature/scope]"
+    subject = ", ".join(target_features or target_domains) or "[feature/domain]"
     design_title = title or "[Short design title]"
-    design_description = description or f"Design for {feature_scope}."
+    design_description = description or f"Design for {subject}."
     requirements_title = f"{design_title} Requirements"
-    requirements_description = f"Canonical implementation requirements for {feature_scope}."
+    requirements_description = f"Canonical implementation requirements for {subject}."
 
     design_frontmatter = [
         f"title: {quote_yaml(design_title)}\n",
@@ -270,8 +276,8 @@ def build_design_doc_command(
         f"requirements: {quote_yaml(os.path.relpath(requirements_path, design_path.parent))}\n"
     )
     append_repos(design_frontmatter, snapshots)
+    append_list(design_frontmatter, "domains", target_domains)
     append_list(design_frontmatter, "features", target_features)
-    append_list(design_frontmatter, "scopes", target_scopes)
 
     requirements_frontmatter = [
         f"title: {quote_yaml(requirements_title)}\n",
@@ -289,8 +295,8 @@ def build_design_doc_command(
         f"design: {quote_yaml(os.path.relpath(design_path, requirements_path.parent))}\n"
     )
     append_repos(requirements_frontmatter, snapshots)
+    append_list(requirements_frontmatter, "domains", target_domains)
     append_list(requirements_frontmatter, "features", target_features)
-    append_list(requirements_frontmatter, "scopes", target_scopes)
 
     design_body = [
         f"# {design_title}\n\n",
