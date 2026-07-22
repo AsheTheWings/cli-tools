@@ -39,7 +39,7 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             REQUIREMENTS_DIR=self.requirements_dir,
         )
 
-    def build_pair(self):
+    def build_unindexed_pair(self):
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
                 documents.design_group,
@@ -60,6 +60,22 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             next(self.design_dir.glob("design-*.md")),
             next(self.requirements_dir.glob("requirements-*.md")),
         )
+
+    def build_pair(self):
+        design_path, requirements_path = self.build_unindexed_pair()
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group, ["index", str(design_path)]
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        return design_path, requirements_path
+
+    def test_build_creates_agent_owned_unnumbered_requirements(self) -> None:
+        _, requirements_path = self.build_unindexed_pair()
+
+        content = requirements_path.read_text(encoding="utf-8")
+        self.assertIn("### Requirement", content)
+        self.assertNotIn("### R1. Requirement", content)
 
     def test_build_and_verify_pair_from_design_document(self) -> None:
         design_path, requirements_path = self.build_pair()
@@ -171,10 +187,15 @@ class DesignRequirementsDocsTest(unittest.TestCase):
                 encoding="utf-8",
             )
         with self.paths_patch(), self.shared_paths_patch():
+            index_result = self.runner.invoke(
+                documents.design_group,
+                ["index", str(designs[-1])],
+            )
             verify_result = self.runner.invoke(
                 documents.design_group,
                 ["verify", str(designs[-1])],
             )
+        self.assertEqual(index_result.exit_code, 0, index_result.output)
         self.assertEqual(verify_result.exit_code, 0, verify_result.output)
 
     def test_relation_inherits_legacy_scopes_as_domains(self) -> None:
@@ -228,10 +249,15 @@ class DesignRequirementsDocsTest(unittest.TestCase):
         )
         self.assertNotIn("supersedes:", extended_design)
         with self.paths_patch(), self.shared_paths_patch():
+            index_result = self.runner.invoke(
+                documents.design_group,
+                ["index", str(designs[-1])],
+            )
             verify_result = self.runner.invoke(
                 documents.design_group,
                 ["verify", str(designs[-1])],
             )
+        self.assertEqual(index_result.exit_code, 0, index_result.output)
         self.assertEqual(verify_result.exit_code, 0, verify_result.output)
 
     def test_extend_and_supersede_are_mutually_exclusive(self) -> None:
@@ -336,49 +362,70 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             captured[str(self.repo)]["design"],
         )
 
-    def test_renumber_sequential_no_changes(self) -> None:
+    def test_index_current_requirements_makes_no_changes(self) -> None:
         design_path, requirements_path = self.build_pair()
         requirements_before = requirements_path.read_text(encoding="utf-8")
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
                 documents.design_group,
-                ["renumber-requirements", str(design_path)],
+                ["index", str(design_path)],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("already sequential", result.output)
+        self.assertIn("indices are current", result.output)
         self.assertEqual(requirements_path.read_text(encoding="utf-8"), requirements_before)
 
-    def test_renumber_non_sequential_updates_indices(self) -> None:
+    def test_index_assigns_and_refreshes_indices(self) -> None:
         design_path, requirements_path = self.build_pair()
         requirements_content = requirements_path.read_text(encoding="utf-8")
-        
-        # Manually introduce non-sequential indices
-        corrupted_content = requirements_content.replace("### R1. Requirement", "### R5. Requirement")
-        corrupted_content += "\n### R2. Another Requirement\n"
+
+        corrupted_content = requirements_content.replace(
+            "### R1. Requirement", "### R5. Requirement"
+        )
+        corrupted_content += "\n### Another Requirement\n\nAnother obligation.\n"
         requirements_path.write_text(corrupted_content, encoding="utf-8")
 
         with self.paths_patch(), self.shared_paths_patch():
             result = self.runner.invoke(
                 documents.design_group,
-                ["renumber-requirements", str(design_path)],
+                ["index", str(design_path)],
             )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Renumbered requirement indices", result.output)
-        
+        self.assertIn("Indexed 2 requirements", result.output)
+
         updated_content = requirements_path.read_text(encoding="utf-8")
         self.assertIn("### R1. Requirement", updated_content)
         self.assertIn("### R2. Another Requirement", updated_content)
         self.assertNotIn("### R5. Requirement", updated_content)
+
+    def test_index_ignores_bodyless_legacy_h3_grouping_labels(self) -> None:
+        design_path, requirements_path = self.build_pair()
+        content = requirements_path.read_text(encoding="utf-8")
+        content = content.replace(
+            "### R1. Requirement", "### Legacy grouping\n\n### Requirement"
+        )
+        requirements_path.write_text(content, encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group, ["index", str(design_path)]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        updated = requirements_path.read_text(encoding="utf-8")
+        self.assertIn("### Legacy grouping", updated)
+        self.assertIn("### R1. Requirement", updated)
 
     def test_verify_detects_non_sequential_indices(self) -> None:
         design_path, requirements_path = self.build_pair()
         requirements_content = requirements_path.read_text(encoding="utf-8")
         
         # Manually introduce non-sequential indices
-        corrupted_content = requirements_content.replace("### R1. Requirement", "### R5. Requirement")
+        corrupted_content = requirements_content.replace(
+            "### R1. Requirement", "### R5. Requirement"
+        )
         requirements_path.write_text(corrupted_content, encoding="utf-8")
 
         with self.paths_patch(), self.shared_paths_patch():
@@ -388,8 +435,20 @@ class DesignRequirementsDocsTest(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("Requirements indices are not sequential", result.output)
-        self.assertIn("renumber", result.output)
+        self.assertIn("Requirement indices are not current", result.output)
+        self.assertIn("tool design index", result.output)
+
+    def test_verify_rejects_unindexed_requirements(self) -> None:
+        design_path, _ = self.build_unindexed_pair()
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group, ["verify", str(design_path)]
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("an unindexed requirement", result.output)
+        self.assertIn("tool design index", result.output)
 
 
 if __name__ == "__main__":

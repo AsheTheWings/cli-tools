@@ -23,6 +23,31 @@ _desktop_env = Path("/root/Desktop/cli-tools/.env")
 if _desktop_env.exists():
     load_dotenv(_desktop_env)
 
+COMMIT_SYSTEM_INSTRUCTION = """Generate a commit message following Conventional commits specification.
+
+The commit message should:
+1. Follow the format: <type>: <subject> or <type>(<scope>): <subject>
+2. Use one of these types: feat, fix, docs, style, refactor, perf, test, chore, ci, build
+3. Keep the subject line under 75 characters
+4. Use imperative mood in the subject line
+5. Don't end the subject line with a period
+6. Optionally include a body that explains the changes in detail
+7. Optionally include footers for issue references
+8. Mark a change as breaking only when it makes an existing public or relied-upon
+   API, CLI, configuration, protocol, data format, or behavior incompatible and
+   requires consumer or operator action
+9. For a breaking change, append ! before the colon and include a
+   BREAKING CHANGE: footer that explains the required action
+10. Do not mark additive changes, internal refactors, or documentation of a
+    future breaking change as breaking
+11. Any change that breaks external behavior (i.e., is a breaking change) must
+    be labeled as 'feat', even if it would otherwise be classified as another
+    type like 'refactor' or 'chore'
+
+NOTE: Always revise your generation, make sure every line is under 75 chars.
+
+Analyze the provided git diff and generate an appropriate commit message."""
+
 
 async def generate_commit_message(
     diff_output: str,
@@ -43,22 +68,6 @@ async def generate_commit_message(
     Raises:
         Exception: If API call fails
     """
-    # System instructions for commit message generation
-    system_instruction = """Generate a commit message following Conventional commits specification.
-
-The commit message should:
-1. Follow the format: <type>(<scope>): <subject>
-2. Use one of these types: feat, fix, docs, style, refactor, perf, test, chore, ci, build
-3. Keep the subject line under 75 characters
-4. Use imperative mood in the subject line
-5. Don't end the subject line with a period
-6. Optionally include a body that explains the changes in detail
-7. Optionally include a footer for breaking changes or issue references
-
-NOTE: Always revise your generation, make sure every line is under 75 chars.
-
-Analyze the provided git diff and generate an appropriate commit message."""
-
     # Prepare user message with diff and recent commits
     user_message_parts = ["Generate a commit message for the following changes:\n"]
 
@@ -79,7 +88,7 @@ Analyze the provided git diff and generate an appropriate commit message."""
         client = get_tera_client()
 
         result = await client.complete(
-            system_prompt=system_instruction,
+            system_prompt=COMMIT_SYSTEM_INSTRUCTION,
             user_prompt=user_message,
             model="gemini-latest",
             temperature=0.7,
@@ -132,6 +141,49 @@ def run_git_command(args: list[str], cwd: str) -> tuple[int, str, str]:
             "",
             "git command not found. Please ensure git is installed and in PATH.",
         )
+
+
+def plan_document_subject(action: str, documents: list[str]) -> str:
+    """Build the operational subject used for plan document changes."""
+    design_docs = [name for name in documents if name.startswith("design-")]
+    requirements_docs = [
+        name for name in documents if name.startswith("requirements-")
+    ]
+    if len(documents) == 2 and len(design_docs) == len(requirements_docs) == 1:
+        target = f"{design_docs[0]} and {requirements_docs[0]} pair"
+    else:
+        target = " and ".join(documents)
+    return f"docs: {action} {target}"
+
+
+def plan_repository_instructions(
+    created_docs: list[str],
+    updated_docs: list[str],
+) -> str:
+    """Build deterministic commit instructions for the plan repository."""
+    rules = [
+        "For the /root/Desktop/plan repository, follow these rules:",
+        "- Use the 'docs' type for design and requirements document changes.",
+        "- Start the subject with 'create' or 'update' and include the affected "
+        "document filenames.",
+        "- Include a brief body describing newly created designs.",
+    ]
+
+    if created_docs or updated_docs:
+        rules.append("\nSpecifically for the currently staged changes:")
+    if created_docs:
+        rules.append(f"- Created files: {', '.join(created_docs)}")
+        rules.append(
+            f"  The subject line MUST be: "
+            f"'{plan_document_subject('create', created_docs)}'."
+        )
+    if updated_docs:
+        rules.append(f"- Updated files: {', '.join(updated_docs)}")
+        rules.append(
+            f"  The subject line MUST be: "
+            f"'{plan_document_subject('update', updated_docs)}'."
+        )
+    return "\n".join(rules)
 
 
 def get_recent_commits(cwd: str, num_commits: int = 5) -> Optional[str]:
@@ -319,32 +371,7 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
                         elif status.startswith("M") or status.startswith("R"):
                             updated_docs.append(p.name)
 
-        plan_rules = [
-            "For the /root/Desktop/plan repository, you must follow these repository-specific rules:",
-            "- When a requirement or design doc is created, the commit scope MUST be 'create'. The commit subject MUST follow the format: 'create <design doc> and <requirements> pair' (replacing `<design doc>` and `<requirements>` with the actual filenames of the design and requirements docs that were created). The commit message MUST include a brief body about the design.",
-            "- If a design or requirements doc got updated, the commit scope MUST be 'update'.",
-        ]
-
-        if created_docs or updated_docs:
-            plan_rules.append("\nSpecifically for the currently staged changes:")
-            if created_docs:
-                plan_rules.append(f"- Created files: {', '.join(created_docs)}")
-                design_docs = [d for d in created_docs if d.startswith("design-")]
-                req_docs = [d for d in created_docs if d.startswith("requirements-")]
-                design_name = design_docs[0] if design_docs else "<design doc>"
-                req_name = req_docs[0] if req_docs else "<requirements>"
-                plan_rules.append(
-                    f"  Instruction: A design/requirements doc was created. You MUST use the scope 'create'. "
-                    f"The subject line MUST be: 'create {design_name} and {req_name} pair' (e.g. docs(create): create {design_name} and {req_name} pair). "
-                    f"Provide a brief body about the design."
-                )
-            if updated_docs:
-                plan_rules.append(f"- Updated files: {', '.join(updated_docs)}")
-                plan_rules.append(
-                    "  Instruction: A design/requirements doc was updated. You MUST use the scope 'update' (e.g. docs(update): ...)."
-                )
-
-        repo_instructions = "\n".join(plan_rules)
+        repo_instructions = plan_repository_instructions(created_docs, updated_docs)
 
     # Combine instructions
     combined_instructions = []

@@ -304,11 +304,11 @@ def build_design_doc_command(
         "TBD.\n\n",
     ]
     requirements_body = [f"# {requirements_title}\n\n"]
-    for index, repo in enumerate(target_repos, start=1):
+    for repo in target_repos:
         requirements_body.extend(
             [
                 f"## {repo}\n\n",
-                f"### R{index}. Requirement\n\n",
+                "### Requirement\n\n",
                 "TBD.\n\n",
             ]
         )
@@ -364,21 +364,42 @@ def verify_repo_snapshots(
         fail(f"Repository snapshot mismatch: {', '.join(mismatches)}")
 
 
+def requirement_headings(
+    requirements_body: List[str],
+) -> List[Tuple[int, Optional[int], str]]:
+    """Return substantive H3 requirement headings in document order."""
+    headings: List[Tuple[int, Optional[int], str]] = []
+    for position, line in enumerate(requirements_body):
+        match = re.fullmatch(r"###\s+(?:R(\d+)\.\s+)?(.+?)\s*", line.strip())
+        if not match:
+            continue
+
+        end = position + 1
+        while end < len(requirements_body) and not re.match(
+            r"^#{1,3}\s+", requirements_body[end]
+        ):
+            end += 1
+        if not any(item.strip() for item in requirements_body[position + 1 : end]):
+            continue
+
+        found = int(match.group(1)) if match.group(1) else None
+        headings.append((position, found, match.group(2)))
+    return headings
+
+
 def verify_requirement_indices(requirements_body: List[str]) -> None:
     click.echo("🔍 Verifying requirement indices...")
-    index = 1
-    for line in requirements_body:
-        match = re.match(r"^### R(\d+)([\s\S]*)$", line)
-        if match:
-            found_index = int(match.group(1))
-            if found_index != index:
-                fail(
-                    f"Requirements indices are not sequential. Found R{found_index} but expected R{index}.\n"
-                    "    Run 'tool design renumber-requirements <design-doc>' "
-                    "to fix this."
-                )
-            index += 1
-    click.echo("  - Indices: ✓ SEQUENTIAL")
+    headings = requirement_headings(requirements_body)
+    if not headings:
+        fail("Requirements document contains no substantive H3 requirements")
+    for expected, (_, found, _) in enumerate(headings, start=1):
+        if found != expected:
+            detail = "an unindexed requirement" if found is None else f"R{found}"
+            fail(
+                f"Requirement indices are not current. Found {detail} but expected R{expected}.\n"
+                "    Run 'tool design index <design-doc>' to fix this."
+            )
+    click.echo(f"  - Indices: ✓ CURRENT ({len(headings)} requirements)")
 
 
 def verify_lineage(
@@ -587,27 +608,24 @@ def design_capture_implementation_command(path: str) -> None:
     capture_implementation(design_path, requirements_path)
 
 
-@design_group.command(name="renumber-requirements")
+@design_group.command(name="index")
 @click.argument("path", required=True, type=click.Path())
-def design_renumber_requirements_command(path: str) -> None:
-    """Renumber all requirements (### R*) in a design pair."""
+def design_index_command(path: str) -> None:
+    """Assign generated R* indices to substantive H3 requirements."""
     _, requirements_path = resolve_pair_from_design(path)
     frontmatter, body = read_document(requirements_path, "requirements document")
 
-    new_body = []
-    index = 1
+    headings = requirement_headings(body)
+    if not headings:
+        fail("Requirements document contains no substantive H3 requirements")
+
+    new_body = list(body)
     changed = False
-    for line in body:
-        match = re.match(r"^(### R)\d+([\s\S]*)$", line)
-        if match:
-            prefix, rest = match.groups()
-            new_line = f"{prefix}{index}{rest}"
-            if new_line != line:
-                changed = True
-            new_body.append(new_line)
-            index += 1
-        else:
-            new_body.append(line)
+    for index, (position, _, title) in enumerate(headings, start=1):
+        new_line = f"### R{index}. {title}\n"
+        if new_line != body[position]:
+            new_body[position] = new_line
+            changed = True
 
     if changed:
         try:
@@ -615,11 +633,11 @@ def design_renumber_requirements_command(path: str) -> None:
                 assemble(frontmatter, new_body), encoding="utf-8"
             )
             click.echo(
-                f"✅ Renumbered requirement indices in {requirements_path} (total {index - 1} requirements)."
+                f"✅ Indexed {len(headings)} requirements in {requirements_path}."
             )
         except OSError as error:
-            fail(f"Failed to write renumbered requirements: {error}")
+            fail(f"Failed to write indexed requirements: {error}")
     else:
         click.echo(
-            f"✅ Requirement indices are already sequential (total {index - 1} requirements)."
+            f"✅ Requirement indices are current ({len(headings)} requirements)."
         )
