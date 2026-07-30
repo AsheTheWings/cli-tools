@@ -8,6 +8,7 @@ using Tera AI with gemini-latest model, based on staged changes.
 import os
 import sys
 import asyncio
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -43,10 +44,26 @@ The commit message should:
 11. Any change that breaks external behavior (i.e., is a breaking change) must
     be labeled as 'feat', even if it would otherwise be classified as another
     type like 'refactor' or 'chore'
+12. Return only the commit message, without Markdown code fences or commentary
 
 NOTE: Always revise your generation, make sure every line is under 75 chars.
 
 Analyze the provided git diff and generate an appropriate commit message."""
+
+_OUTER_CODE_FENCE = re.compile(
+    r"\A[ \t]*(?P<fence>`{3,}|~{3,})[^\r\n]*\r?\n"
+    r"(?P<body>.*?)\r?\n[ \t]*(?P=fence)[ \t]*\Z",
+    re.DOTALL,
+)
+
+
+def normalize_commit_message(message: str) -> str:
+    """Trim model output and unwrap one Markdown fence enclosing the full message."""
+    normalized = message.strip().lstrip("\ufeff")
+    fenced = _OUTER_CODE_FENCE.fullmatch(normalized)
+    if fenced:
+        normalized = fenced.group("body").strip()
+    return normalized
 
 
 async def generate_commit_message(
@@ -104,10 +121,11 @@ async def generate_commit_message(
         else:
             commit_message, usage = result
 
-        if not commit_message.strip():
+        commit_message = normalize_commit_message(commit_message)
+        if not commit_message:
             raise RuntimeError("Empty response from Tera API")
 
-        return commit_message.strip()
+        return commit_message
 
     except Exception as e:
         raise RuntimeError(f"Failed to generate commit message: {e}") from e
