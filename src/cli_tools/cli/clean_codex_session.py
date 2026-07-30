@@ -97,13 +97,13 @@ def find_codex_session(session_id: str, codex_home: Optional[Path] = None) -> Pa
 
 
 def parse_rollout(
-    file_path: Path, include_tools: bool = False
+    file_path: Path, include_tools: bool = True
 ) -> List[Dict[str, Any]]:
     """Extract readable dialogue entries from a Codex rollout.
 
     Args:
         file_path: Rollout JSONL file to parse.
-        include_tools: Whether to retain tool calls and their outputs.
+        include_tools: Whether to retain tool calls and their outputs (defaults to True).
 
     Returns:
         Ordered, deduplicated transcript entries.
@@ -112,6 +112,8 @@ def parse_rollout(
         OSError: If the rollout cannot be read.
     """
     raw_entries: List[Dict[str, Any]] = []
+    seen_outputs: Dict[str, int] = {}  # call_id -> raw_entries index
+
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -161,6 +163,7 @@ def parse_rollout(
                     "tool_search_call",
                     "web_search_call",
                     "image_generation_call",
+                    "mcp_tool_call_start",
                 ):
                     name = (
                         payload.get("name")
@@ -169,13 +172,21 @@ def parse_rollout(
                             if isinstance(payload.get("input"), dict)
                             else None
                         )
+                        or (
+                            payload.get("invocation", {}).get("tool")
+                            if isinstance(payload.get("invocation"), dict)
+                            else None
+                        )
                         or "tool"
                     )
-                    args = payload.get("arguments") or payload.get("input")
+                    args = payload.get("arguments") or payload.get("input") or payload.get("action")
+                    if isinstance(payload.get("invocation"), dict):
+                        args = payload["invocation"].get("arguments")
+                    content_val = args if isinstance(args, (dict, list, str)) else (str(args) if args is not None else "")
                     raw_entries.append({
                         "role": "Tool Call",
                         "name": name,
-                        "content": args if isinstance(args, (dict, list, str)) else str(args),
+                        "content": content_val,
                     })
 
                 elif include_tools and item_type in (
@@ -183,12 +194,13 @@ def parse_rollout(
                     "custom_tool_call_output",
                     "tool_search_output",
                 ):
+                    cid = payload.get("call_id")
                     out = payload.get("output")
                     out_text = ""
                     if isinstance(out, list):
                         for item in out:
                             if isinstance(item, dict):
-                                out_text += item.get("text", "") or item.get("input_text", "")
+                                out_text += item.get("text", "") or item.get("input_text", "") or item.get("output_text", "")
                             else:
                                 out_text += str(item)
                     elif isinstance(out, dict):
@@ -197,10 +209,19 @@ def parse_rollout(
                         out_text = str(out) if out is not None else ""
                     out_text = out_text.strip()
                     if out_text:
+                        if out_text == "{}" and raw_entries and raw_entries[-1].get("role") == "Tool Output":
+                            continue
+                        if cid and cid in seen_outputs:
+                            idx = seen_outputs[cid]
+                            if raw_entries[idx].get("content") in ("", "{}") and out_text not in ("", "{}"):
+                                raw_entries[idx]["content"] = out_text
+                                continue
                         raw_entries.append({
                             "role": "Tool Output",
                             "content": out_text,
                         })
+                        if cid:
+                            seen_outputs[cid] = len(raw_entries) - 1
 
             elif event_type == "event_msg":
                 msg_type = payload.get("type")
@@ -220,6 +241,46 @@ def parse_rollout(
                             "role": "Assistant",
                             "content": text,
                         })
+                elif include_tools and msg_type in (
+                    "exec_command_end",
+                    "patch_apply_end",
+                    "mcp_tool_call_end",
+                    "web_search_end",
+                    "image_generation_end",
+                ):
+                    cid = payload.get("call_id")
+                    out = payload.get("output") or payload.get("results") or payload.get("stdout")
+                    if not out and "stderr" in payload:
+                        out = payload.get("stderr")
+                    if not out and "result" in payload:
+                        out = payload.get("result")
+
+                    out_text = ""
+                    if isinstance(out, list):
+                        for item in out:
+                            if isinstance(item, dict):
+                                out_text += item.get("text", "") or item.get("input_text", "") or item.get("output_text", "")
+                            else:
+                                out_text += str(item)
+                    elif isinstance(out, dict):
+                        out_text = json.dumps(out, indent=2)
+                    else:
+                        out_text = str(out) if out is not None else ""
+                    out_text = out_text.strip()
+                    if out_text:
+                        if out_text == "{}" and raw_entries and raw_entries[-1].get("role") == "Tool Output":
+                            continue
+                        if cid and cid in seen_outputs:
+                            idx = seen_outputs[cid]
+                            if raw_entries[idx].get("content") in ("", "{}") and out_text not in ("", "{}"):
+                                raw_entries[idx]["content"] = out_text
+                                continue
+                        raw_entries.append({
+                            "role": "Tool Output",
+                            "content": out_text,
+                        })
+                        if cid:
+                            seen_outputs[cid] = len(raw_entries) - 1
 
     # Deduplicate consecutive identical entries
     cleaned: List[Dict[str, Any]] = []
@@ -282,9 +343,10 @@ def format_as_text(entries: List[Dict[str, Any]]) -> str:
     help="Output format: text dialogue (default), json array, or jsonl.",
 )
 @click.option(
-    "--include-tools",
-    is_flag=True,
-    help="Include tool calls and tool outputs in the clean transcript.",
+    "--include-tools/--skip-tools",
+    "include_tools",
+    default=True,
+    help="Include (default) or skip tool calls and tool outputs in the clean transcript.",
 )
 @click.option(
     "--stdout",
