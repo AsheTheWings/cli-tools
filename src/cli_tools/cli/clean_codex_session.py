@@ -1,22 +1,27 @@
-"""
-Clean session transcript rollout files into dialogue entries.
-
-Strips timestamps, token counts, developer/system instructions, rate limits,
-tool calls, tool outputs, and internal metadata, leaving only clean dialogue turns (User, Assistant).
-"""
+"""Find and clean Codex session rollouts into readable dialogue transcripts."""
 
 import json
+import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 import click
 
 DEFAULT_TMP_DIR = Path("/root/Desktop/tmp")
+CODEX_SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 
 
 def clean_text(text: str) -> str:
+    """Remove Codex context wrappers from dialogue text.
+
+    Args:
+        text: Raw dialogue text from a rollout event.
+
+    Returns:
+        Text with internal Codex context wrappers removed.
+    """
     if not text:
         return ""
     # Strip known system/context tags
@@ -28,9 +33,84 @@ def clean_text(text: str) -> str:
     return text
 
 
+def validate_session_id(value: str) -> str:
+    """Validate and normalize a Codex session UUID.
+
+    Args:
+        value: Session identifier supplied on the command line.
+
+    Returns:
+        The canonical lowercase UUID string.
+
+    Raises:
+        click.BadParameter: If the value is not a canonical UUID.
+    """
+    try:
+        session_id = str(UUID(value))
+    except ValueError as exc:
+        raise click.BadParameter("must be a valid session UUID") from exc
+
+    if value.lower() != session_id:
+        raise click.BadParameter("must be a canonical hyphenated UUID")
+    return session_id
+
+
+def find_codex_session(session_id: str, codex_home: Optional[Path] = None) -> Path:
+    """Find the rollout JSONL file for a Codex session UUID.
+
+    Args:
+        session_id: Canonical Codex session UUID.
+        codex_home: Codex data directory. Defaults to ``$CODEX_HOME`` or
+            ``~/.codex``.
+
+    Returns:
+        The unique matching rollout path.
+
+    Raises:
+        click.ClickException: If the Codex data directory is unavailable or
+            the session cannot be resolved uniquely.
+    """
+    root = codex_home or Path(
+        os.environ.get("CODEX_HOME", Path.home() / ".codex")
+    ).expanduser()
+    if not root.is_dir():
+        raise click.ClickException(f"Codex home does not exist: {root}")
+
+    matches = sorted({
+        path.resolve()
+        for directory_name in CODEX_SESSION_DIRECTORIES
+        if (directory := root / directory_name).is_dir()
+        for path in directory.rglob(f"*{session_id}*.jsonl")
+        if path.is_file()
+    })
+
+    if not matches:
+        raise click.ClickException(
+            f"Codex session {session_id} was not found under {root}"
+        )
+    if len(matches) > 1:
+        paths = "\n".join(f"  {path}" for path in matches)
+        raise click.ClickException(
+            f"Codex session {session_id} matched multiple rollouts:\n{paths}"
+        )
+    return matches[0]
+
+
 def parse_rollout(
     file_path: Path, include_tools: bool = False
 ) -> List[Dict[str, Any]]:
+    """Extract readable dialogue entries from a Codex rollout.
+
+    Args:
+        file_path: Rollout JSONL file to parse.
+        include_tools: Whether to retain tool calls and their outputs.
+
+    Returns:
+        Ordered, deduplicated transcript entries.
+
+    Raises:
+        OSError: If the rollout cannot be read.
+    """
     raw_entries: List[Dict[str, Any]] = []
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -158,6 +238,14 @@ def parse_rollout(
 
 
 def format_as_text(entries: List[Dict[str, Any]]) -> str:
+    """Render transcript entries as readable plain text.
+
+    Args:
+        entries: Parsed transcript entries.
+
+    Returns:
+        A plain-text transcript.
+    """
     blocks: List[str] = []
     for entry in entries:
         role = entry["role"]
@@ -177,8 +265,8 @@ def format_as_text(entries: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
-@click.command(name="clean")
-@click.argument("session_file_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.command(name="clean-codex-session")
+@click.argument("session_id", callback=lambda _ctx, _param, value: validate_session_id(value))
 @click.option(
     "-o",
     "--output",
@@ -203,15 +291,15 @@ def format_as_text(entries: List[Dict[str, Any]]) -> str:
     is_flag=True,
     help="Print cleaned transcript directly to stdout instead of saving to file.",
 )
-def clean_command(
-    session_file_path: Path,
+def clean_codex_session_command(
+    session_id: str,
     output: Optional[Path],
     output_format: str,
     include_tools: bool,
     stdout: bool,
 ) -> None:
     """
-    Clean session transcript rollout file by removing non-viable fields.
+    Find and clean a Codex session transcript by SESSION_ID.
 
     Strips timestamps, token usage, rate limits, developer/system instructions,
     tool calls, tool outputs, and metadata, returning clean dialogue entries.
@@ -219,16 +307,18 @@ def clean_command(
     By default, writes the cleaned file to /root/Desktop/tmp/<clean_filename>.
 
     Usage:
-        tool clean /path/to/rollout-session.jsonl
-        tool clean /path/to/rollout-session.jsonl --stdout
-        tool clean /path/to/rollout-session.jsonl -f json
-        tool clean /path/to/rollout-session.jsonl -o /custom/path.txt
+        tool clean-codex-session 019fa63d-3d17-79c3-a41d-0cac9be1b613
+        tool clean-codex-session 019fa63d-3d17-79c3-a41d-0cac9be1b613 --stdout
+        tool clean-codex-session 019fa63d-3d17-79c3-a41d-0cac9be1b613 -f json
+        tool clean-codex-session 019fa63d-3d17-79c3-a41d-0cac9be1b613 -o /custom/path.txt
     """
     try:
+        session_file_path = find_codex_session(session_id)
         entries = parse_rollout(session_file_path, include_tools=include_tools)
     except Exception as exc:
-        click.echo(f"Error parsing session file: {exc}", err=True)
-        sys.exit(1)
+        if isinstance(exc, click.ClickException):
+            raise
+        raise click.ClickException(f"Could not parse Codex session: {exc}") from exc
 
     if output_format == "json":
         result = json.dumps(entries, indent=2)
@@ -244,23 +334,13 @@ def clean_command(
         click.echo(result)
         return
 
-    # Determine output file path
+    clean_stem = f"clean-{session_id}"
     if output is None:
         out_dir = DEFAULT_TMP_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
-        stem = session_file_path.stem
-        if stem.startswith("rollout-"):
-            clean_stem = f"clean-{stem[8:]}"
-        else:
-            clean_stem = f"clean-{stem}"
         out_file = out_dir / f"{clean_stem}{ext}"
     elif output.is_dir():
         output.mkdir(parents=True, exist_ok=True)
-        stem = session_file_path.stem
-        if stem.startswith("rollout-"):
-            clean_stem = f"clean-{stem[8:]}"
-        else:
-            clean_stem = f"clean-{stem}"
         out_file = output / f"{clean_stem}{ext}"
     else:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -270,5 +350,4 @@ def clean_command(
         out_file.write_text(result + "\n", encoding="utf-8")
         click.echo(str(out_file))
     except Exception as exc:
-        click.echo(f"Error writing to output file: {exc}", err=True)
-        sys.exit(1)
+        raise click.ClickException(f"Could not write transcript: {exc}") from exc

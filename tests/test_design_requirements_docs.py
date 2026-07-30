@@ -110,7 +110,7 @@ class DesignRequirementsDocsTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("No such option '--scope'", result.output)
 
-    def test_verify_detects_repository_drift(self) -> None:
+    def test_verify_reports_design_snapshot_drift_as_information(self) -> None:
         design_path, _ = self.build_pair()
         (self.repo / "source.txt").write_text("changed\n", encoding="utf-8")
 
@@ -119,8 +119,35 @@ class DesignRequirementsDocsTest(unittest.TestCase):
                 documents.design_group, ["verify", str(design_path)]
             )
 
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("MISMATCH", result.output)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(
+            "current state differs from recorded design snapshot", result.output
+        )
+        self.assertIn("Snapshot differences are informational", result.output)
+        self.assertNotIn("MISMATCH", result.output)
+        self.assertNotIn("❌", result.output)
+
+    def test_verify_reports_implementation_snapshot_drift_as_information(self) -> None:
+        design_path, _ = self.build_pair()
+        with self.paths_patch(), self.shared_paths_patch():
+            capture_result = self.runner.invoke(
+                documents.design_group,
+                ["capture-implementation", str(design_path)],
+            )
+        self.assertEqual(capture_result.exit_code, 0, capture_result.output)
+        (self.repo / "source.txt").write_text("changed later\n", encoding="utf-8")
+
+        with self.paths_patch(), self.shared_paths_patch():
+            result = self.runner.invoke(
+                documents.design_group, ["verify", str(design_path)]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(
+            "current state differs from recorded implementation snapshot",
+            result.output,
+        )
+        self.assertIn("Design and requirements document pair verified", result.output)
 
     def test_verify_rejects_different_pair_statuses(self) -> None:
         design_path, requirements_path = self.build_pair()

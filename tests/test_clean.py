@@ -1,11 +1,20 @@
+import os
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from cli_tools.cli.clean import DEFAULT_TMP_DIR, clean_command, parse_rollout
+from cli_tools.cli.clean_codex_session import (
+    DEFAULT_TMP_DIR,
+    clean_codex_session_command,
+    find_codex_session,
+    parse_rollout,
+)
+
+SESSION_ID = "019fa63d-3d17-79c3-a41d-0cac9be1b613"
 
 
 class CleanCommandTest(unittest.TestCase):
@@ -68,6 +77,33 @@ class CleanCommandTest(unittest.TestCase):
         finally:
             tmp_path.unlink()
 
+    def test_find_codex_session_searches_session_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp)
+            rollout = (
+                codex_home
+                / "sessions"
+                / "2026"
+                / "07"
+                / "28"
+                / f"rollout-2026-07-28T01-00-59-{SESSION_ID}.jsonl"
+            )
+            rollout.parent.mkdir(parents=True)
+            rollout.touch()
+
+            self.assertEqual(find_codex_session(SESSION_ID, codex_home), rollout)
+
+    def test_find_codex_session_rejects_ambiguous_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp)
+            for directory_name in ("sessions", "archived_sessions"):
+                directory = codex_home / directory_name
+                directory.mkdir()
+                (directory / f"rollout-{SESSION_ID}.jsonl").touch()
+
+            with self.assertRaisesRegex(Exception, "matched multiple rollouts"):
+                find_codex_session(SESSION_ID, codex_home)
+
     def test_cli_clean_defaults_to_tmp_dir(self) -> None:
         lines = [
             json.dumps({
@@ -77,21 +113,21 @@ class CleanCommandTest(unittest.TestCase):
             })
         ]
 
-        with tempfile.NamedTemporaryFile("w", prefix="rollout-test-", suffix=".jsonl", delete=False) as tmp:
-            tmp.write("\n".join(lines))
-            tmp_path = Path(tmp.name)
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp)
+            session_dir = codex_home / "sessions" / "2026" / "07" / "28"
+            session_dir.mkdir(parents=True)
+            rollout_path = session_dir / f"rollout-2026-07-28T01-00-59-{SESSION_ID}.jsonl"
+            rollout_path.write_text("\n".join(lines), encoding="utf-8")
+            expected_clean_file = DEFAULT_TMP_DIR / f"clean-{SESSION_ID}.txt"
 
-        expected_clean_file = DEFAULT_TMP_DIR / f"clean-{tmp_path.stem[8:]}.txt"
-
-        try:
-            result = self.runner.invoke(clean_command, [str(tmp_path)])
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+                result = self.runner.invoke(clean_codex_session_command, [SESSION_ID])
             self.assertEqual(result.exit_code, 0)
             self.assertIn(str(expected_clean_file), result.output)
             self.assertTrue(expected_clean_file.exists())
             content = expected_clean_file.read_text(encoding="utf-8")
             self.assertIn("[User]\nDefault location test", content)
-        finally:
-            tmp_path.unlink()
             if expected_clean_file.exists():
                 expected_clean_file.unlink()
 
@@ -109,19 +145,28 @@ class CleanCommandTest(unittest.TestCase):
             })
         ]
 
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as tmp:
-            tmp.write("\n".join(lines))
-            tmp_path = Path(tmp.name)
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp)
+            session_dir = codex_home / "sessions"
+            session_dir.mkdir()
+            rollout_path = session_dir / f"rollout-{SESSION_ID}.jsonl"
+            rollout_path.write_text("\n".join(lines), encoding="utf-8")
 
-        try:
-            result = self.runner.invoke(clean_command, [str(tmp_path), "--stdout"])
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+                result = self.runner.invoke(
+                    clean_codex_session_command, [SESSION_ID, "--stdout"]
+                )
             self.assertEqual(result.exit_code, 0)
             self.assertIn("[User]\nWhat is 2 + 2?", result.output)
             self.assertIn("[Assistant]\n2 + 2 is 4.", result.output)
             self.assertNotIn("timestamp", result.output)
             self.assertNotIn("token", result.output)
-        finally:
-            tmp_path.unlink()
+
+    def test_cli_rejects_non_uuid_session_id(self) -> None:
+        result = self.runner.invoke(clean_codex_session_command, ["not-a-session"])
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("must be a valid session UUID", result.output)
 
 
 if __name__ == "__main__":
