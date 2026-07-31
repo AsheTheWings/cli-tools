@@ -42,14 +42,12 @@ from cli_tools.cli.generate_command import command_generator
 from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
 from cli_tools.cli.clean_codex_session import clean_codex_session_command
-from cli_tools.cli.design_requirements_docs import design_group
 
 main.add_command(commit_command, "commit")
 main.add_command(command_generator, "command")
 main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
 main.add_command(clean_codex_session_command)
-main.add_command(design_group, "design")
 
 
 if __name__ == "__main__":
