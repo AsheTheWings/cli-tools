@@ -308,13 +308,34 @@ def undo_trailing_stage_commits(cwd: str) -> int:
     default=None,
     help="Extra instructions to include in the commit message generation prompt",
 )
-def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
+@click.option(
+    "--stage",
+    "stage_paths",
+    multiple=True,
+    metavar="PATHSPEC",
+    help=(
+        "Stage and commit only the given Git pathspec. Repeat for multiple "
+        "pathspecs; requires an initially clean index."
+    ),
+)
+@click.option(
+    "--staged",
+    is_flag=True,
+    help="Commit exactly the changes already staged in the index.",
+)
+def commit_command(
+    path: str,
+    yes: bool,
+    instructions: Optional[str],
+    stage_paths: tuple[str, ...],
+    staged: bool,
+) -> None:
     """
     Generate a conventional commit message using Tera AI.
 
     This command:
-    1. Stages all changes with 'git add .'
-    2. Gets the diff with 'git diff HEAD'
+    1. Stages all changes, selected pathspecs, or uses the existing index
+    2. Gets the staged diff with 'git diff --cached'
     3. Uses Tera AI to generate a conventional commit message
     4. Prompts for confirmation (unless -y flag is used)
     5. Commits with the generated message if confirmed
@@ -326,6 +347,8 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
         tool commit
         tool commit /path/to/repo
         tool commit . -y  # Auto-commit and push
+        tool commit . --stage src --stage tests
+        tool commit . --staged
         tool commit . --instructions "focus on performance improvements"
     """
     repo_path = Path(path).resolve()
@@ -339,28 +362,57 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
         click.echo(f"❌ Not a git repository: {repo_path}", err=True)
         sys.exit(1)
 
-    # Pre-step: Undo any trailing "stage" commits so their changes are re-staged
-    # and we can generate a real commit message on top of them.
-    undone = undo_trailing_stage_commits(str(repo_path))
-    if undone:
-        click.echo()
+    if stage_paths and staged:
+        raise click.UsageError("--stage and --staged are mutually exclusive")
 
-    # Step 1: Stage changes in the specified path
-    click.echo(f"📝 Staging changes with 'git add .'...")
-    returncode, stdout, stderr = run_git_command(["add", "."], str(repo_path))
-    if returncode != 0:
-        click.echo(f"❌ Failed to stage changes: {stderr}", err=True)
-        sys.exit(1)
+    if staged:
+        click.echo("📝 Using changes already staged in the index...")
+    elif stage_paths:
+        returncode, staged_names, stderr = run_git_command(
+            ["diff", "--cached", "--name-only"], str(repo_path)
+        )
+        if returncode != 0:
+            click.echo(f"❌ Failed to inspect staged changes: {stderr}", err=True)
+            sys.exit(1)
+        if staged_names.strip():
+            click.echo(
+                "❌ --stage requires an initially clean index; commit or unstage "
+                "existing changes, or use --staged after curating the index.",
+                err=True,
+            )
+            sys.exit(1)
+
+        rendered_paths = " ".join(stage_paths)
+        click.echo(f"📝 Staging selected pathspecs: {rendered_paths}")
+        returncode, stdout, stderr = run_git_command(
+            ["add", "--", *stage_paths], str(repo_path)
+        )
+        if returncode != 0:
+            click.echo(f"❌ Failed to stage selected changes: {stderr}", err=True)
+            sys.exit(1)
+    else:
+        # Preserve the historical behavior only for the default all-changes mode.
+        undone = undo_trailing_stage_commits(str(repo_path))
+        if undone:
+            click.echo()
+
+        click.echo("📝 Staging all changes with 'git add .'...")
+        returncode, stdout, stderr = run_git_command(["add", "."], str(repo_path))
+        if returncode != 0:
+            click.echo(f"❌ Failed to stage changes: {stderr}", err=True)
+            sys.exit(1)
 
     # Step 2: Get diff
-    click.echo("📊 Getting diff with 'git diff HEAD'...")
-    returncode, diff_output, stderr = run_git_command(["diff", "HEAD"], str(repo_path))
+    click.echo("📊 Getting staged diff with 'git diff --cached'...")
+    returncode, diff_output, stderr = run_git_command(
+        ["diff", "--cached"], str(repo_path)
+    )
     if returncode != 0:
         click.echo(f"❌ Failed to get diff: {stderr}", err=True)
         sys.exit(1)
 
     if not diff_output or not diff_output.strip():
-        click.echo("ℹ️  No changes to commit (working tree clean)")
+        click.echo("ℹ️  No staged changes to commit")
         sys.exit(0)
 
     # Repository-specific instructions check
@@ -477,7 +529,12 @@ def commit_command(path: str, yes: bool, instructions: Optional[str]) -> None:
             click.echo(stdout)
     else:
         click.echo("❌ Commit cancelled.")
-        # Unstage changes
-        click.echo("🔄 Unstaging changes...")
-        run_git_command(["reset", "HEAD"], str(repo_path))
+        if not staged:
+            click.echo("🔄 Unstaging changes added by this command...")
+            reset_args = ["reset", "HEAD"]
+            if stage_paths:
+                reset_args.extend(["--", *stage_paths])
+            run_git_command(reset_args, str(repo_path))
+        else:
+            click.echo("ℹ️  Existing staged changes were left intact.")
         sys.exit(1)

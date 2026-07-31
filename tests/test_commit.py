@@ -1,9 +1,15 @@
 import asyncio
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
+
+from click.testing import CliRunner
 
 from cli_tools.cli.commit import (
     COMMIT_SYSTEM_INSTRUCTION,
+    commit_command,
     generate_commit_message,
     normalize_commit_message,
     plan_document_subject,
@@ -105,6 +111,103 @@ class PlanCommitInstructionsTest(unittest.TestCase):
         )
         self.assertNotIn("docs(create)", instructions)
         self.assertNotIn("docs(update)", instructions)
+
+
+class SelectiveCommitTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp_dir.name)
+        self.git("init", "-q")
+        self.git("config", "user.name", "Test User")
+        self.git("config", "user.email", "test@example.com")
+        (self.repo / "selected.txt").write_text("initial\n")
+        (self.repo / "remaining.txt").write_text("initial\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "chore: initialize fixture")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def git(self, *args: str) -> str:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=self.repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    @patch(
+        "cli_tools.cli.commit.generate_commit_message",
+        new_callable=AsyncMock,
+        return_value="test: commit selected changes",
+    )
+    def test_stage_pathspec_commits_only_selected_changes(
+        self, _generate: AsyncMock
+    ) -> None:
+        (self.repo / "selected.txt").write_text("selected\n")
+        (self.repo / "remaining.txt").write_text("remaining\n")
+
+        result = CliRunner().invoke(
+            commit_command,
+            [str(self.repo), "--stage", "selected.txt"],
+            input="y\nn\n",
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.git("show", "--format=", "--name-only", "HEAD"), "selected.txt"
+        )
+        self.assertEqual(self.git("status", "--short"), "M remaining.txt")
+
+    @patch(
+        "cli_tools.cli.commit.generate_commit_message",
+        new_callable=AsyncMock,
+        return_value="test: commit staged changes",
+    )
+    def test_staged_mode_leaves_unstaged_changes_out(
+        self, _generate: AsyncMock
+    ) -> None:
+        (self.repo / "selected.txt").write_text("selected\n")
+        (self.repo / "remaining.txt").write_text("remaining\n")
+        self.git("add", "selected.txt")
+
+        result = CliRunner().invoke(
+            commit_command,
+            [str(self.repo), "--staged"],
+            input="y\nn\n",
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.git("show", "--format=", "--name-only", "HEAD"), "selected.txt"
+        )
+        self.assertEqual(self.git("status", "--short"), "M remaining.txt")
+
+    def test_stage_pathspec_refuses_an_existing_index(self) -> None:
+        (self.repo / "selected.txt").write_text("selected\n")
+        (self.repo / "remaining.txt").write_text("remaining\n")
+        self.git("add", "remaining.txt")
+
+        result = CliRunner().invoke(
+            commit_command,
+            [str(self.repo), "--stage", "selected.txt"],
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("requires an initially clean index", result.output)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "remaining.txt")
+        self.assertEqual(self.git("diff", "--name-only"), "selected.txt")
+
+    def test_staging_modes_are_mutually_exclusive(self) -> None:
+        result = CliRunner().invoke(
+            commit_command,
+            [str(self.repo), "--stage", "selected.txt", "--staged"],
+        )
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("mutually exclusive", result.output)
 
 
 if __name__ == "__main__":
