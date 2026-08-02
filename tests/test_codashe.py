@@ -172,6 +172,13 @@ class FakeCliClient:
         self.submission = submission
         return {"jobId": "job-cli", "durable": True, "duplicate": False}
 
+    def schema(self):
+        return {
+            "version": "1.2.0",
+            "$defs": {"JobSubmission": {"type": "object"}},
+            "properties": {"JobSubmission": {"$ref": "#/$defs/JobSubmission"}},
+        }
+
     def wait(self, job_id, *, timeout=None, poll_interval=1.0):
         del timeout, poll_interval
         return {
@@ -180,6 +187,77 @@ class FakeCliClient:
             "leases": [],
             "result": {"executionStatus": "completed", "passed": False},
         }
+
+    def events(self, job_id, *, after_sequence=0, follow=True, idle_timeout=1.0, total_timeout=None):
+        del follow, idle_timeout, total_timeout
+        assert job_id == "job-cli"
+        crafted = [
+            {
+                "jobId": job_id,
+                "sequence": 1,
+                "timestamp": "2026-08-02T00:00:00.000Z",
+                "type": "progress.updated",
+                "payload": {
+                    "source": "codex",
+                    "method": "item/started",
+                    "params": {"item": {"type": "reasoning", "content": [], "summary": []}},
+                },
+            },
+            {
+                "jobId": job_id,
+                "sequence": 2,
+                "timestamp": "2026-08-02T00:00:01.000Z",
+                "type": "progress.updated",
+                "payload": {
+                    "source": "codex",
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "mcpToolCall",
+                            "server": "cua",
+                            "tool": "get_desktop_state",
+                            "durationMs": 12,
+                            "error": None,
+                            "result": {
+                                "content": [
+                                    {"type": "image", "mimeType": "image/png", "data": "A" * 50_000},
+                                    {"type": "text", "text": "desktop ok " * 3000},
+                                ]
+                            },
+                        }
+                    },
+                },
+            },
+            {
+                "jobId": job_id,
+                "sequence": 3,
+                "timestamp": "2026-08-02T00:00:02.000Z",
+                "type": "agent.message",
+                "payload": {"source": "codex", "delta": "partial"},
+            },
+            {
+                "jobId": job_id,
+                "sequence": 4,
+                "timestamp": "2026-08-02T00:00:03.000Z",
+                "type": "progress.updated",
+                "payload": {
+                    "source": "codex",
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "commandExecution",
+                            "command": "/usr/bin/zsh -lc 'echo hi'",
+                            "exitCode": 0,
+                            "durationMs": 3,
+                            "aggregatedOutput": "hi\n",
+                        }
+                    },
+                },
+            },
+        ]
+        return iter(
+            event for event in crafted if event["sequence"] > after_sequence
+        )
 
 
 class CodasheCliTest(unittest.TestCase):
@@ -242,6 +320,58 @@ class CodasheCliTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 3, result.output)
         self.assertFalse(json.loads(result.output)["snapshot"]["result"]["passed"])
+
+    @patch("cli_tools.cli.codashe.CodasheGatewayClient", FakeCliClient)
+    def test_watch_compacts_events_and_prints_a_resume_cursor(self) -> None:
+        result = self.runner.invoke(main, ["codashe", "watch", "job-cli", "--once"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        lines = [json.loads(line) for line in result.output.strip().splitlines()]
+
+        # Empty reasoning envelopes and streaming deltas are skipped entirely.
+        sequences = [line.get("sequence") for line in lines]
+        self.assertEqual(sequences, [2, 4, None])
+
+        tool = lines[0]
+        self.assertEqual(tool["kind"], "tool")
+        self.assertEqual(tool["name"], "cua/get_desktop_state")
+        self.assertTrue(tool["ok"])
+        rendered = json.dumps(tool)
+        self.assertNotIn("AAAA", rendered)
+        self.assertIn("base64 chars", rendered)
+        self.assertIn("chars]", tool["result"]["text"])
+
+        command = lines[1]
+        self.assertEqual(command["kind"], "command")
+        self.assertEqual(command["exitCode"], 0)
+        self.assertEqual(command["output"], "hi\n")
+
+        cursor = lines[2]
+        self.assertEqual(cursor["cursor"], 4)
+        self.assertIn("--after", cursor["hint"])
+
+    @patch("cli_tools.cli.codashe.CodasheGatewayClient", FakeCliClient)
+    def test_watch_raw_keeps_complete_payloads(self) -> None:
+        result = self.runner.invoke(
+            main,
+            ["codashe", "watch", "job-cli", "--once", "--raw"],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        lines = [json.loads(line) for line in result.output.strip().splitlines()]
+        self.assertEqual(len(lines), 4 + 1)  # all events plus the cursor hint
+        raw_tool = json.dumps(lines[1])
+        self.assertIn("A" * 1000, raw_tool)
+
+    @patch("cli_tools.cli.codashe.CodasheGatewayClient", FakeCliClient)
+    def test_schema_prints_a_compact_summary_by_default(self) -> None:
+        result = self.runner.invoke(main, ["codashe", "schema"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        summary = json.loads(result.output)
+        self.assertEqual(summary["protocolVersion"], "1.2.0")
+        self.assertIn("hint", summary)
+        self.assertNotIn("schema", summary)
 
 
 if __name__ == "__main__":

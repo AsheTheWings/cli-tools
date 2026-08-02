@@ -78,24 +78,42 @@ def health_command(context: CodasheContext) -> None:
 
 @codashe_command.command("schema")
 @click.option("--output", type=click.Path(path_type=Path), help="Write the schema to this file.")
+@click.option("--print", "print_full", is_flag=True, help="Dump the full schema to stdout.")
 @click.pass_obj
 @_guard
-def schema_command(context: CodasheContext, output: Path | None) -> None:
+def schema_command(
+    context: CodasheContext,
+    output: Path | None,
+    print_full: bool,
+) -> None:
     """Read the exact public schema used by the running gateway."""
     schema = context.client.schema()
-    if output is None:
+    if print_full:
         _emit(context, {"ok": True, "schema": schema})
-        return
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
-    _emit(
-        context,
-        {
-            "ok": True,
-            "path": str(output.resolve()),
-            "protocolVersion": schema.get("version"),
-        },
-    )
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
+        _emit(
+            context,
+            {
+                "ok": True,
+                "path": str(output.resolve()),
+                "protocolVersion": schema.get("version"),
+            },
+        )
+    elif not print_full:
+        definitions = schema.get("$defs") if isinstance(schema.get("$defs"), dict) else {}
+        _emit(
+            context,
+            {
+                "ok": True,
+                "protocolVersion": schema.get("version"),
+                "topLevelKeys": sorted(schema.keys()),
+                "definitions": len(definitions),
+                "definitionNames": sorted(definitions.keys())[:15],
+                "hint": "use --output FILE to write the full schema to disk, or --print to dump it to stdout",
+            },
+        )
 
 
 @codashe_command.command("submit")
@@ -203,6 +221,11 @@ def status_command(context: CodasheContext, job_id: str) -> None:
 @click.option("--once", is_flag=True, help="Return after the retained suffix becomes idle.")
 @click.option("--idle-timeout", type=click.FloatRange(min=0.05), default=1.0)
 @click.option("--timeout", type=click.FloatRange(min=0.1), help="Bound total watch time.")
+@click.option(
+    "--raw",
+    is_flag=True,
+    help="Emit complete untruncated event payloads instead of compact summaries.",
+)
 @click.pass_obj
 @_guard
 def watch_command(
@@ -212,8 +235,10 @@ def watch_command(
     once: bool,
     idle_timeout: float,
     timeout: float | None,
+    raw: bool,
 ) -> None:
     """Stream ordered JSONL events with automatic cursor-based reconnection."""
+    last_sequence: int | None = None
     for event in context.client.events(
         job_id,
         after_sequence=after_sequence,
@@ -221,7 +246,25 @@ def watch_command(
         idle_timeout=idle_timeout,
         total_timeout=timeout,
     ):
-        _emit(context, {"ok": True, "event": event}, force_compact=True)
+        sequence = event.get("sequence")
+        if isinstance(sequence, int):
+            last_sequence = sequence
+        if raw:
+            _emit(context, {"ok": True, "event": event}, force_compact=True)
+            continue
+        summary = _summarize_event(event)
+        if summary is not None:
+            _emit(context, summary, force_compact=True)
+    if last_sequence is not None:
+        _emit(
+            context,
+            {
+                "ok": True,
+                "cursor": last_sequence,
+                "hint": "resume with --after <cursor>",
+            },
+            force_compact=True,
+        )
 
 
 @codashe_command.command("wait")
@@ -503,6 +546,163 @@ def clone_command(
             "accepted": accepted,
         },
     )
+
+
+_LONG_TEXT_LIMIT = 1500
+_INLINE_LIMIT = 300
+
+
+def _truncate(text: str, limit: int = _LONG_TEXT_LIMIT) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\u2026[+{len(text) - limit} chars]"
+
+
+def _json_preview(value: Any, limit: int = _INLINE_LIMIT) -> str:
+    return _truncate(json.dumps(value, separators=(",", ":")), limit)
+
+
+def _summarize_tool_result(result: Any) -> Any:
+    if result is None:
+        return None
+    if not isinstance(result, dict):
+        return _truncate(str(result))
+    error = result.get("error")
+    summary: dict[str, Any] = {"error": _truncate(str(error))} if error else {}
+    parts: list[str] = []
+    content = result.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            data = block.get("data")
+            if isinstance(data, str):
+                media = block.get("mimeType") or block.get("type") or "blob"
+                parts.append(f"[{media} payload omitted: {len(data)} base64 chars]")
+            elif isinstance(block.get("text"), str):
+                parts.append(block["text"])
+    if parts:
+        summary["text"] = _truncate("\n".join(parts))
+    return summary if summary else None
+
+
+def _summarize_item(
+    base: dict[str, Any],
+    method: str,
+    item: dict[str, Any],
+) -> dict[str, Any] | None:
+    item_type = item.get("type")
+    started = method == "item/started"
+    if item_type == "reasoning":
+        # Reasoning envelopes almost always carry empty content and pair
+        # started/completed duplicates; only surface a populated summary.
+        summary_items = item.get("summary") or []
+        text = " ".join(
+            entry.get("text", "")
+            for entry in summary_items
+            if isinstance(entry, dict)
+        ).strip()
+        if not text:
+            return None
+        return {**base, "kind": "reasoning", "summary": _truncate(text)}
+    if item_type == "commandExecution":
+        command = item.get("command")
+        rendered: dict[str, Any] = {
+            **base,
+            "kind": "command",
+            "command": _truncate(str(command), _INLINE_LIMIT) if command else None,
+        }
+        if started:
+            rendered["phase"] = "running"
+            return rendered
+        rendered["exitCode"] = item.get("exitCode")
+        if item.get("durationMs") is not None:
+            rendered["durationMs"] = item.get("durationMs")
+        output = item.get("aggregatedOutput")
+        if isinstance(output, str) and output:
+            rendered["output"] = _truncate(output)
+        return rendered
+    if item_type == "mcpToolCall":
+        name = f"{item.get('server')}/{item.get('tool')}"
+        if started:
+            return {
+                **base,
+                "kind": "tool",
+                "name": name,
+                "args": _json_preview(item.get("arguments")),
+            }
+        rendered = {
+            **base,
+            "kind": "tool",
+            "name": name,
+            "ok": item.get("error") is None,
+        }
+        if item.get("durationMs") is not None:
+            rendered["durationMs"] = item.get("durationMs")
+        result = _summarize_tool_result(item.get("result"))
+        if result is not None:
+            rendered["result"] = result
+        return rendered
+    if item_type == "agentMessage":
+        if started:
+            return None
+        return {
+            **base,
+            "kind": "message",
+            "text": _truncate(str(item.get("text") or ""), 4000),
+        }
+    if started:
+        return {**base, "kind": item_type or "item", "phase": "started"}
+    return {**base, "kind": item_type or "item", "item": _json_preview(item, 800)}
+
+
+def _summarize_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Render one job event as a compact, context-friendly JSONL summary.
+
+    Raw Codex progress items carry full page snapshots, command transcripts,
+    and base64 screenshots; this renderer keeps the monitoring signal
+    (sequence, tool, command, outcome) and replaces bulk payloads with
+    truncated previews. Use ``watch --raw`` for the complete stream.
+    """
+    event_type = event.get("type")
+    base: dict[str, Any] = {
+        "ok": True,
+        "sequence": event.get("sequence"),
+        "timestamp": event.get("timestamp"),
+    }
+    if event_type == "agent.message":
+        # Per-token streaming deltas are noise for polling monitors; the
+        # completed agentMessage item carries the final text.
+        return None
+    if event_type != "progress.updated":
+        return {
+            **base,
+            "type": event_type,
+            "payload": _json_preview(event.get("payload"), 1000),
+        }
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return {**base, "type": event_type}
+    if payload.get("source") == "agent":
+        body = {
+            key: value for key, value in payload.items() if key != "source"
+        }
+        return {**base, "type": event_type, "agent": _json_preview(body, 1000)}
+    method = payload.get("method")
+    params = payload.get("params")
+    item = params.get("item") if isinstance(params, dict) else None
+    if isinstance(item, dict) and method in ("item/started", "item/completed"):
+        return _summarize_item(
+            {**base, "type": event_type},
+            str(method),
+            item,
+        )
+    return {
+        **base,
+        "type": event_type,
+        "method": method,
+        "params": _json_preview(params, 600),
+    }
 
 
 def _emit(
