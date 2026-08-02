@@ -6,6 +6,7 @@ Usage:
     tool commit . -y            # Auto-commit and push without prompts
     tool command "description"   # Generate shell command from natural language
     tool beep 1 30              # Beep every 1 minute for 30 minutes
+    tool codashe --help          # Delegate and observe codashe-omni jobs
 """
 
 import click
@@ -42,12 +43,14 @@ from cli_tools.cli.generate_command import command_generator
 from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
 from cli_tools.cli.clean_codex_session import clean_codex_session_command
+from cli_tools.cli.codashe import codashe_command
 
 main.add_command(commit_command, "commit")
 main.add_command(command_generator, "command")
 main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
 main.add_command(clean_codex_session_command)
+main.add_command(codashe_command)
 
 
 if __name__ == "__main__":
