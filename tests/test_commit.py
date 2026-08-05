@@ -396,31 +396,6 @@ class MessageSourceTest(unittest.TestCase):
     @patch(
         "cli_tools.cli.commit.generate_commit_message",
         new_callable=AsyncMock,
-        return_value="test: real commit",
-    )
-    def test_dry_run_skips_stage_commit_undo(self, _generate: AsyncMock) -> None:
-        self.git("commit", "-q", "--allow-empty", "-m", "stage")
-        stage_head = self.git("rev-parse", "HEAD")
-        (self.repo / "tracked.txt").write_text("changed\n")
-
-        result = CliRunner().invoke(commit_command, [str(self.repo), "--dry-run"])
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("skipping the trailing-'stage'-commit undo", result.output)
-        # History untouched by the dry run.
-        self.assertEqual(self.git("rev-parse", "HEAD"), stage_head)
-
-        # A real run still undoes the trailing stage commit and recommits.
-        result = CliRunner().invoke(commit_command, [str(self.repo)])
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(self.git("log", "-1", "--format=%s"), "test: real commit")
-        # The changes from the 'stage' commit landed in the new commit plus
-        # the freshly modified file; history no longer contains a 'stage' tip.
-        self.assertNotEqual(self.git("log", "-1", "--format=%s"), "stage")
-
-    @patch(
-        "cli_tools.cli.commit.generate_commit_message",
-        new_callable=AsyncMock,
         return_value="test: json summary",
     )
     def test_json_summary_line_on_success(self, _generate: AsyncMock) -> None:

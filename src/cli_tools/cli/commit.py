@@ -299,76 +299,6 @@ def resolve_push_args(cwd: str, branch: str) -> tuple[list[str], str, bool]:
 EXIT_PUSH_FAILED = 3
 
 
-def undo_trailing_stage_commits(cwd: str) -> int:
-    """
-    Undo trailing 'stage' commits by soft-resetting to the latest non-'stage' commit.
-
-    Scans the commit history from HEAD backward. If one or more consecutive
-    commits have the message 'stage', performs `git reset --soft` to the hash
-    of the latest commit that is *not* 'stage', effectively un-committing the
-    trailing 'stage' commits while keeping their changes staged.
-
-    Args:
-        cwd: Working directory for git command
-
-    Returns:
-        Number of trailing 'stage' commits that were undone (0 if none found)
-    """
-    # Get commit hashes and subjects for the last 20 commits
-    returncode, stdout, stderr = run_git_command(
-        ["log", "-n", "20", "--format=%H %s"], cwd
-    )
-
-    if returncode != 0 or not stdout.strip():
-        return 0
-
-    lines = stdout.strip().splitlines()
-    if not lines:
-        return 0
-
-    # Check if HEAD is a 'stage' commit
-    head_hash, head_subject = lines[0].split(" ", 1)
-    if head_subject.strip() != "stage":
-        return 0
-
-    # Walk back to find the latest non-'stage' commit
-    target_hash: Optional[str] = None
-    stage_count = 0
-
-    for line in lines:
-        commit_hash, subject = line.split(" ", 1)
-        if subject.strip() == "stage":
-            stage_count += 1
-        else:
-            target_hash = commit_hash
-            break
-
-    if target_hash is None:
-        # Every commit in the scanned range is 'stage'; scan deeper
-        returncode, stdout, stderr = run_git_command(
-            ["log", "--format=%H %s", "--grep=^stage$", "--all-match"], cwd
-        )
-        # Fallback: if everything is 'stage', reset to the very first commit's parent
-        # or just abort to avoid destructive behavior
-        click.echo(
-            "⚠️  All scanned commits are 'stage'. Aborting auto-reset to avoid data loss.",
-            err=True,
-        )
-        return 0
-
-    click.echo(
-        f"🔄 Undoing {stage_count} trailing 'stage' commit(s) via soft reset to {target_hash[:12]}..."
-    )
-    returncode, stdout, stderr = run_git_command(["reset", "--soft", target_hash], cwd)
-
-    if returncode != 0:
-        click.echo(f"❌ Failed to undo 'stage' commits: {stderr}", err=True)
-        return 0
-
-    click.echo("✅ Undone trailing 'stage' commits. Changes are now staged.")
-    return stage_count
-
-
 @click.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
@@ -399,7 +329,7 @@ def undo_trailing_stage_commits(cwd: str) -> int:
     "--dry-run",
     is_flag=True,
     help="Print the commit message and exit without committing. Restores the "
-    "index to its prior state and never undoes 'stage' commits.",
+    "index to its prior state.",
 )
 @click.option(
     "--only",
@@ -443,9 +373,7 @@ def commit_command(
 
     \b
     Staging modes (mutually exclusive):
-      (default)         stage all changes with 'git add .'; trailing commits
-                        whose message is exactly 'stage' are first undone via
-                        a soft reset so their changes are recommitted
+      (default)         stage all changes with 'git add .'
       --only PATHSPEC   stage only the given pathspecs (needs a clean index)
       --staged          use the index exactly as it is
 
@@ -528,16 +456,6 @@ def commit_command(
             click.echo(f"❌ Failed to stage selected changes: {stderr}", err=True)
             sys.exit(1)
     else:
-        if dry_run:
-            click.echo(
-                "📝 Dry run: skipping the trailing-'stage'-commit undo; the "
-                "previewed message may differ from a real run."
-            )
-        else:
-            # Preserve the historical behavior only for the default all-changes mode.
-            undone = undo_trailing_stage_commits(str(repo_path))
-            if undone:
-                click.echo()
         click.echo("📝 Staging all changes with 'git add .'...")
         returncode, stdout, stderr = run_git_command(["add", "."], str(repo_path))
         if returncode != 0:
