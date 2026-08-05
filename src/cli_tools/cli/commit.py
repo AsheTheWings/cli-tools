@@ -17,6 +17,7 @@ from typing import Optional
 import click
 from dotenv import load_dotenv
 
+from cli_tools import workspace
 from cli_tools.inference.tera import get_client as get_tera_client
 
 # Load environment variables
@@ -379,11 +380,14 @@ def commit_command(
     Behavior:
       Commits immediately; use --dry-run to preview the message first.
       Pushes only when --push is given.
+      Rejects commits made in the main checkout of a project whose workspace
+      preferences set workflow "worktree-pr" — use a linked worktree instead.
+      See 'tool setup workspace'.
 
     \b
     Exit codes:
       0  success, or nothing staged to commit
-      1  failure or invalid invocation context
+      1  failure, invalid invocation context, or workspace policy rejection
       2  usage error (conflicting/invalid flags)
       3  commit succeeded but the requested push failed
 
@@ -420,6 +424,32 @@ def commit_command(
 
     click.echo(f"📁 Repository: {repo_path}")
     click.echo()
+
+    # Workspace policy: a project configured for the worktree+PR workflow
+    # must not receive commits in its main checkout; its linked worktrees are
+    # the intended commit targets. The check runs before any staging so a
+    # rejected invocation never mutates the index.
+    try:
+        project = workspace.resolve_project(repo_path)
+    except workspace.WorkspaceConfigError as exc:
+        click.echo(f"⚠️  Ignoring unusable workspace config: {exc}", err=True)
+        project = None
+    if (
+        project is not None
+        and project.uses_worktree_pr
+        and workspace.is_main_checkout(repo_path)
+    ):
+        click.echo(
+            f"❌ Workspace policy: '{project.name}' is configured for the "
+            f"worktree+PR workflow (see {workspace.default_config_path()}), "
+            f"but {repo_path} is its main checkout.\n"
+            f"   Work in a linked worktree on a branch and open a PR instead, "
+            f"e.g.:\n"
+            f"     git -C {project.path} worktree add <worktree-path> "
+            f"-b <branch>",
+            err=True,
+        )
+        sys.exit(1)
 
     # Pre-flight checks: fail before mutating the index or paying for an AI
     # generation call when the invocation context cannot work.
