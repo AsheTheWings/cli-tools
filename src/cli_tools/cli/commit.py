@@ -8,6 +8,7 @@ using Tera AI with gemini-latest model, based on staged changes.
 import os
 import sys
 import asyncio
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -226,6 +227,78 @@ def get_recent_commits(cwd: str, num_commits: int = 5) -> Optional[str]:
     return stdout.strip()
 
 
+def get_current_branch(cwd: str) -> Optional[str]:
+    """
+    Get the checked-out branch name, or None when HEAD is detached.
+
+    Args:
+        cwd: Working directory for git command
+
+    Returns:
+        Branch name, or None for detached HEAD (or failure)
+    """
+    returncode, stdout, _ = run_git_command(["branch", "--show-current"], cwd)
+    if returncode != 0:
+        return None
+    branch = stdout.strip()
+    return branch or None
+
+
+def get_staged_names(cwd: str) -> set[str]:
+    """
+    Get the set of pathnames currently staged in the index.
+
+    Args:
+        cwd: Working directory for git command
+
+    Returns:
+        Set of staged pathnames (NUL-separated output, safe for odd names)
+    """
+    returncode, stdout, _ = run_git_command(
+        ["diff", "--cached", "--name-only", "-z"], cwd
+    )
+    if returncode != 0 or not stdout:
+        return set()
+    return {name for name in stdout.split("\0") if name}
+
+
+def resolve_push_args(cwd: str, branch: str) -> tuple[list[str], str, bool]:
+    """
+    Build the git push argv for a branch, honoring its configured upstream.
+
+    If the branch has an upstream (possibly on a different remote and/or with a
+    different remote branch name), push to that remote/ref. Otherwise fall back
+    to pushing to origin/<branch>, which may create a new remote branch.
+
+    Args:
+        cwd: Working directory for git command
+        branch: Local branch name to push
+
+    Returns:
+        Tuple of (push argv after "git push", human description of the target,
+        whether this is the origin/<branch> fallback)
+    """
+    returncode, upstream, _ = run_git_command(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd
+    )
+    upstream = upstream.strip()
+    if returncode == 0 and upstream:
+        remote, _, remote_branch = upstream.partition("/")
+        if remote and remote_branch:
+            return (
+                [remote, f"{branch}:{remote_branch}"],
+                f"{remote}/{remote_branch}",
+                False,
+            )
+    return (["origin", branch], f"origin/{branch}", True)
+
+
+# Exit code used when the commit succeeded but the push failed, so callers
+# (scripts and AI agents) can distinguish "nothing was recorded" (exit 1)
+# from "commit landed locally, only the push failed" (exit 3).
+EXIT_PUSH_FAILED = 3
+
+
 def undo_trailing_stage_commits(cwd: str) -> int:
     """
     Undo trailing 'stage' commits by soft-resetting to the latest non-'stage' commit.
@@ -299,23 +372,53 @@ def undo_trailing_stage_commits(cwd: str) -> int:
 @click.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
-    "-y", "--yes", is_flag=True, help="Automatically commit and push without prompts"
+    "-y",
+    "--yes",
+    is_flag=True,
+    help="Skip the commit confirmation prompt. Does NOT push; combine with "
+    "--push for full automation.",
+)
+@click.option(
+    "--push/--no-push",
+    "push",
+    default=None,
+    help="Push after committing: --push pushes without asking, --no-push skips "
+    "pushing. When neither is given: ask if interactive, skip push otherwise. "
+    "Pushes to the branch's configured upstream if it has one, otherwise to "
+    "origin/<branch>.",
 )
 @click.option(
     "-i",
     "--instructions",
     type=str,
     default=None,
-    help="Extra instructions to include in the commit message generation prompt",
+    help="Extra instructions to include in the commit message generation prompt "
+    "(mutually exclusive with --message)",
 )
 @click.option(
+    "-m",
+    "--message",
+    "message",
+    type=str,
+    default=None,
+    help="Use this commit message verbatim, skipping AI generation",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print the commit message and exit without committing. Restores the "
+    "index to its prior state and never undoes 'stage' commits.",
+)
+@click.option(
+    "--only",
     "--stage",
-    "stage_paths",
+    "only_paths",
     multiple=True,
     metavar="PATHSPEC",
     help=(
         "Stage and commit only the given Git pathspec. Repeat for multiple "
-        "pathspecs; requires an initially clean index."
+        "pathspecs; requires an initially clean index. "
+        "('--stage' is kept as a legacy alias.)"
     ),
 )
 @click.option(
@@ -323,38 +426,62 @@ def undo_trailing_stage_commits(cwd: str) -> int:
     is_flag=True,
     help="Commit exactly the changes already staged in the index.",
 )
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Print a machine-readable JSON summary as the last stdout line.",
+)
 def commit_command(
     path: str,
     yes: bool,
+    push: Optional[bool],
     instructions: Optional[str],
-    stage_paths: tuple[str, ...],
+    message: Optional[str],
+    dry_run: bool,
+    only_paths: tuple[str, ...],
     staged: bool,
+    json_output: bool,
 ) -> None:
     """
     Generate a conventional commit message using Tera AI.
 
-    This command:
-    1. Stages all changes, selected pathspecs, or uses the existing index
-    2. Gets the staged diff with 'git diff --cached'
-    3. Uses Tera AI to generate a conventional commit message
-    4. Prompts for confirmation (unless -y flag is used)
-    5. Commits with the generated message if confirmed
-    6. Optionally pushes to origin
+    \b
+    Staging modes (mutually exclusive):
+      (default)         stage all changes with 'git add .'; trailing commits
+                        whose message is exactly 'stage' are first undone via
+                        a soft reset so their changes are recommitted
+      --only PATHSPEC   stage only the given pathspecs (needs a clean index)
+      --staged          use the index exactly as it is
 
-    PATH: Repository path (defaults to current directory)
+    \b
+    Interactivity:
+      Prompts require a TTY. On non-interactive stdin the command fails early
+      unless -y/--yes (or --dry-run) is given. Pushing only happens with
+      --push (or when confirmed interactively).
 
+    \b
+    Exit codes:
+      0  success, or nothing staged to commit
+      1  failure, cancelled, or invalid invocation context
+      2  usage error (conflicting/invalid flags)
+      3  commit succeeded but the requested push failed
+
+    \b
     Examples:
         tool commit
         tool commit /path/to/repo
-        tool commit . -y  # Auto-commit and push
-        tool commit . --stage src --stage tests
+        tool commit . -y --push            # fully automated: commit and push
+        tool commit . -y                   # commit without prompting, no push
+        tool commit . --dry-run            # preview the generated message
+        tool commit . -m "fix: typo" -y    # skip AI generation
+        tool commit . --only src --only tests
         tool commit . --staged
         tool commit . --instructions "focus on performance improvements"
+
+    PATH: Repository path (defaults to current directory)
     """
     repo_path = Path(path).resolve()
-
-    click.echo(f"📁 Repository: {repo_path}")
-    click.echo()
 
     # Check if it's a git repository
     returncode, _, stderr = run_git_command(["rev-parse", "--git-dir"], str(repo_path))
@@ -362,40 +489,71 @@ def commit_command(
         click.echo(f"❌ Not a git repository: {repo_path}", err=True)
         sys.exit(1)
 
-    if stage_paths and staged:
-        raise click.UsageError("--stage and --staged are mutually exclusive")
+    if only_paths and staged:
+        raise click.UsageError("--only/--stage and --staged are mutually exclusive")
+
+    if message is not None and instructions is not None:
+        raise click.UsageError("--message and --instructions are mutually exclusive")
+
+    if dry_run and push is True:
+        raise click.UsageError("--dry-run cannot be combined with --push")
+
+    click.echo(f"📁 Repository: {repo_path}")
+    click.echo()
+
+    # Pre-flight checks: fail before mutating the index or paying for an AI
+    # generation call when the invocation context cannot work.
+    branch_name = get_current_branch(str(repo_path))
+    if push is True and branch_name is None:
+        click.echo(
+            "❌ --push requested but HEAD is detached (nothing to push from). "
+            "Re-run with --no-push to commit without pushing.",
+            err=True,
+        )
+        sys.exit(1)
+
+    interactive = sys.stdin.isatty()
+    if not interactive and not yes and not dry_run:
+        click.echo(
+            "❌ stdin is not interactive and confirmation is required. "
+            "Pass -y/--yes to confirm the commit without prompting, or "
+            "--dry-run to preview the message.",
+            err=True,
+        )
+        sys.exit(1)
+
+    staged_before = get_staged_names(str(repo_path))
 
     if staged:
         click.echo("📝 Using changes already staged in the index...")
-    elif stage_paths:
-        returncode, staged_names, stderr = run_git_command(
-            ["diff", "--cached", "--name-only"], str(repo_path)
-        )
-        if returncode != 0:
-            click.echo(f"❌ Failed to inspect staged changes: {stderr}", err=True)
-            sys.exit(1)
-        if staged_names.strip():
+    elif only_paths:
+        if staged_before:
             click.echo(
-                "❌ --stage requires an initially clean index; commit or unstage "
+                "❌ --only requires an initially clean index; commit or unstage "
                 "existing changes, or use --staged after curating the index.",
                 err=True,
             )
             sys.exit(1)
 
-        rendered_paths = " ".join(stage_paths)
+        rendered_paths = " ".join(only_paths)
         click.echo(f"📝 Staging selected pathspecs: {rendered_paths}")
         returncode, stdout, stderr = run_git_command(
-            ["add", "--", *stage_paths], str(repo_path)
+            ["add", "--", *only_paths], str(repo_path)
         )
         if returncode != 0:
             click.echo(f"❌ Failed to stage selected changes: {stderr}", err=True)
             sys.exit(1)
     else:
-        # Preserve the historical behavior only for the default all-changes mode.
-        undone = undo_trailing_stage_commits(str(repo_path))
-        if undone:
-            click.echo()
-
+        if dry_run:
+            click.echo(
+                "📝 Dry run: skipping the trailing-'stage'-commit undo; the "
+                "previewed message may differ from a real run."
+            )
+        else:
+            # Preserve the historical behavior only for the default all-changes mode.
+            undone = undo_trailing_stage_commits(str(repo_path))
+            if undone:
+                click.echo()
         click.echo("📝 Staging all changes with 'git add .'...")
         returncode, stdout, stderr = run_git_command(["add", "."], str(repo_path))
         if returncode != 0:
@@ -413,43 +571,20 @@ def commit_command(
 
     if not diff_output or not diff_output.strip():
         click.echo("ℹ️  No staged changes to commit")
+        if json_output:
+            click.echo(
+                json.dumps(
+                    {
+                        "repo": str(repo_path),
+                        "branch": branch_name,
+                        "committed": False,
+                        "pushed": False,
+                        "dry_run": dry_run,
+                        "reason": "no staged changes",
+                    }
+                )
+            )
         sys.exit(0)
-
-    # Repository-specific instructions check
-    repo_instructions = None
-    if repo_path.resolve() == Path("/root/Desktop/plan").resolve():
-        created_docs = []
-        updated_docs = []
-        status_code, status_stdout, status_stderr = run_git_command(
-            ["diff", "--cached", "--name-status"], str(repo_path)
-        )
-        if status_code == 0:
-            for line in status_stdout.splitlines():
-                if not line.strip():
-                    continue
-                parts = line.split(maxsplit=1)
-                if len(parts) == 2:
-                    status, file_path = parts[0], parts[1]
-                    p = Path(file_path)
-                    is_doc = False
-                    if file_path.startswith("design/") or file_path.startswith("requirements/"):
-                        if p.name.startswith("design-") or p.name.startswith("requirements-"):
-                            is_doc = True
-                    if is_doc:
-                        if status.startswith("A") or status.startswith("C"):
-                            created_docs.append(p.name)
-                        elif status.startswith("M") or status.startswith("R"):
-                            updated_docs.append(p.name)
-
-        repo_instructions = plan_repository_instructions(created_docs, updated_docs)
-
-    # Combine instructions
-    combined_instructions = []
-    if repo_instructions:
-        combined_instructions.append(repo_instructions)
-    if instructions:
-        combined_instructions.append(instructions)
-    final_instructions = "\n\n".join(combined_instructions) if combined_instructions else None
 
     # Show diff summary
     lines = diff_output.split("\n")
@@ -457,84 +592,199 @@ def commit_command(
     click.echo(f"📄 Files changed: {len(files_changed)}")
     click.echo()
 
-    # Step 3: Get recent commits for context
-    click.echo("📜 Fetching recent commits for context...")
-    recent_commits = get_recent_commits(str(repo_path), num_commits=5)
-    if recent_commits:
-        click.echo("✅ Found recent commit history")
-    else:
-        click.echo("⚠️  No recent commits found (new repository or shallow clone)")
-    click.echo()
+    if message is None:
+        # Repository-specific instructions check
+        repo_instructions = None
+        if repo_path.resolve() == Path("/root/Desktop/plan").resolve():
+            created_docs = []
+            updated_docs = []
+            status_code, status_stdout, status_stderr = run_git_command(
+                ["diff", "--cached", "--name-status"], str(repo_path)
+            )
+            if status_code == 0:
+                for line in status_stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    parts = line.split(maxsplit=1)
+                    if len(parts) == 2:
+                        status, file_path = parts[0], parts[1]
+                        p = Path(file_path)
+                        is_doc = False
+                        if file_path.startswith("design/") or file_path.startswith(
+                            "requirements/"
+                        ):
+                            if p.name.startswith("design-") or p.name.startswith(
+                                "requirements-"
+                            ):
+                                is_doc = True
+                        if is_doc:
+                            if status.startswith("A") or status.startswith("C"):
+                                created_docs.append(p.name)
+                            elif status.startswith("M") or status.startswith("R"):
+                                updated_docs.append(p.name)
 
-    # Step 4: Generate commit message with agent
-    click.echo("🤖 Generating commit message with Tera AI...")
-    try:
-        commit_message = asyncio.run(
-            generate_commit_message(diff_output, recent_commits, final_instructions)
+            repo_instructions = plan_repository_instructions(
+                created_docs, updated_docs
+            )
+
+        # Combine instructions
+        combined_instructions = []
+        if repo_instructions:
+            combined_instructions.append(repo_instructions)
+        if instructions:
+            combined_instructions.append(instructions)
+        final_instructions = (
+            "\n\n".join(combined_instructions) if combined_instructions else None
         )
-    except Exception as e:
-        click.echo(f"❌ Failed to generate commit message: {e}", err=True)
-        sys.exit(1)
 
-    # Step 4: Display generated message
+        # Get recent commits for context
+        click.echo("📜 Fetching recent commits for context...")
+        recent_commits = get_recent_commits(str(repo_path), num_commits=5)
+        if recent_commits:
+            click.echo("✅ Found recent commit history")
+        else:
+            click.echo("⚠️  No recent commits found (new repository or shallow clone)")
+        click.echo()
+
+        # Generate commit message with Tera AI
+        click.echo("🤖 Generating commit message with Tera AI...")
+        try:
+            commit_message = asyncio.run(
+                generate_commit_message(
+                    diff_output, recent_commits, final_instructions
+                )
+            )
+        except Exception as e:
+            click.echo(f"❌ Failed to generate commit message: {e}", err=True)
+            sys.exit(1)
+        message_source = "generated"
+    else:
+        commit_message = message.strip().lstrip("\ufeff")
+        if not commit_message:
+            click.echo("❌ --message must not be empty", err=True)
+            sys.exit(1)
+        message_source = "provided"
+
+    # Display the message
     click.echo()
     click.echo("=" * 70)
-    click.echo("Generated Commit Message:")
+    click.echo(f"Commit Message ({message_source}):")
     click.echo("=" * 70)
     click.echo(commit_message)
     click.echo("=" * 70)
     click.echo()
 
-    # Step 5: Confirm and commit
-    if yes or click.confirm("Proceed with this commit message?", default=True):
-        click.echo("💾 Committing changes...")
-        returncode, stdout, stderr = run_git_command(
-            ["commit", "-m", commit_message], str(repo_path)
-        )
-
-        if returncode != 0:
-            click.echo(f"❌ Failed to commit: {stderr}", err=True)
-            sys.exit(1)
-
-        click.echo("✅ Changes committed successfully!")
-        click.echo(stdout)
-
-        # Step 6: Ask about pushing to origin (or auto-push if -y flag)
-        click.echo()
-        if yes or click.confirm("Push to origin?", default=False):
-            # Get current branch name
-            returncode, branch_name, stderr = run_git_command(
-                ["branch", "--show-current"], str(repo_path)
+    if dry_run:
+        # Restore the index to its prior state: unstage exactly what the
+        # staging step added, leaving any pre-existing index content intact.
+        newly_staged = sorted(get_staged_names(str(repo_path)) - staged_before)
+        if newly_staged:
+            run_git_command(["reset", "-q", "--", *newly_staged], str(repo_path))
+        click.echo("🔍 Dry run: nothing committed; index restored to prior state.")
+        if json_output:
+            click.echo(
+                json.dumps(
+                    {
+                        "repo": str(repo_path),
+                        "branch": branch_name,
+                        "committed": False,
+                        "pushed": False,
+                        "dry_run": True,
+                        "message": commit_message,
+                        "message_source": message_source,
+                    }
+                )
             )
+        return
 
-            if returncode != 0:
-                click.echo(f"❌ Failed to get current branch: {stderr}", err=True)
-                sys.exit(1)
-
-            branch_name = branch_name.strip()
-            if not branch_name:
-                click.echo("❌ No branch name found", err=True)
-                sys.exit(1)
-
-            click.echo(f"📤 Pushing to origin/{branch_name}...")
-            returncode, stdout, stderr = run_git_command(
-                ["push", "origin", branch_name], str(repo_path)
-            )
-
-            if returncode != 0:
-                click.echo(f"❌ Failed to push: {stderr}", err=True)
-                sys.exit(1)
-
-            click.echo("✅ Pushed to origin successfully!")
-            click.echo(stdout)
-    else:
-        click.echo("❌ Commit cancelled.")
+    # Confirm and commit. Step 1 guaranteed prompts only happen on a TTY.
+    if not yes and not click.confirm("Proceed with this commit message?", default=True):
+        click.echo("❌ Commit cancelled; nothing was committed.")
         if not staged:
             click.echo("🔄 Unstaging changes added by this command...")
             reset_args = ["reset", "HEAD"]
-            if stage_paths:
-                reset_args.extend(["--", *stage_paths])
+            if only_paths:
+                reset_args.extend(["--", *only_paths])
             run_git_command(reset_args, str(repo_path))
         else:
             click.echo("ℹ️  Existing staged changes were left intact.")
         sys.exit(1)
+
+    click.echo("💾 Committing changes...")
+    returncode, stdout, stderr = run_git_command(
+        ["commit", "-m", commit_message], str(repo_path)
+    )
+
+    if returncode != 0:
+        click.echo(f"❌ Failed to commit: {stderr}", err=True)
+        sys.exit(1)
+
+    _, short_hash, _ = run_git_command(["rev-parse", "--short", "HEAD"], str(repo_path))
+    short_hash = short_hash.strip()
+
+    click.echo("✅ Changes committed successfully!")
+    click.echo(stdout)
+
+    # Decide whether to push. --push already pre-validated a non-detached
+    # HEAD above; here we resolve the concrete target.
+    pushed = False
+    push_description = None
+    push_failed = False
+    want_push = push is True
+    if push is None:
+        if branch_name is None:
+            click.echo("ℹ️  Detached HEAD: skipping push.")
+        elif interactive:
+            want_push = click.confirm("Push to origin?", default=False)
+        else:
+            click.echo(
+                "ℹ️  stdin is not interactive and --push was not given; "
+                "leaving the commit local."
+            )
+
+    if want_push:
+        push_argv, push_description, is_fallback = resolve_push_args(
+            str(repo_path), branch_name
+        )
+        if is_fallback:
+            click.echo(
+                f"⚠️  No upstream configured for '{branch_name}'; pushing to "
+                f"{push_description} (may create a new remote branch)."
+            )
+        click.echo(f"📤 Pushing to {push_description}...")
+        returncode, stdout, stderr = run_git_command(
+            ["push", *push_argv], str(repo_path)
+        )
+
+        if returncode != 0:
+            push_failed = True
+            click.echo(
+                f"⚠️  Commit {short_hash} succeeded locally but the push to "
+                f"{push_description} failed: {stderr.strip()}",
+                err=True,
+            )
+        else:
+            pushed = True
+            click.echo(f"✅ Pushed to {push_description} successfully!")
+            click.echo(stdout)
+
+    if json_output:
+        click.echo(
+            json.dumps(
+                {
+                    "repo": str(repo_path),
+                    "branch": branch_name,
+                    "commit": short_hash,
+                    "committed": True,
+                    "pushed": pushed,
+                    "push_target": push_description if pushed else None,
+                    "push_failed": push_failed,
+                    "dry_run": False,
+                    "message": commit_message,
+                    "message_source": message_source,
+                }
+            )
+        )
+
+    if push_failed:
+        sys.exit(EXIT_PUSH_FAILED)

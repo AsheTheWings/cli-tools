@@ -3,7 +3,7 @@ CLI Tools - Command-line utilities for AI-powered workflows.
 
 Usage:
     tool commit [PATH]         # Generate AI-powered git commit message
-    tool commit . -y            # Auto-commit and push without prompts
+    tool commit . -y --push     # Auto-commit and push without prompts
     tool command "description"   # Generate shell command from natural language
     tool beep 1 30              # Beep every 1 minute for 30 minutes
     tool codashe --help          # Delegate and observe codashe-omni jobs
