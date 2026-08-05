@@ -26,8 +26,10 @@ written by ``tool setup workspace``) are documentation and always ignored.
 
 Workflow semantics:
 
-* ``direct``: agents apply changes directly in the project's main checkout
-  (the directory that contains the ``.git`` directory).
+* ``direct``: agents apply changes directly in the project's main checkout:
+  the primary working tree whose ``.git`` entry is a real directory (a linked
+  worktree has a ``.git`` *file* instead, pointing back to the main
+  checkout).
 * ``worktree-pr``: agents must create or reuse a git worktree on a dedicated
   branch, land the change there, push, and open a pull request. Committing in
   the main checkout is rejected by ``tool commit`` before anything is staged.

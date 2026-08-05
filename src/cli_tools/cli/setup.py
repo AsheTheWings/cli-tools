@@ -31,9 +31,10 @@ WORKSPACE_SCAFFOLD = {
         },
         "_fields": {
             "projects.<name>.path": (
-                "Absolute path to the project's main checkout: the directory "
-                "that contains the .git directory. Linked worktrees of the "
-                "project resolve to this entry automatically."
+                "Absolute path to the project's main checkout: the primary "
+                "working tree whose .git entry is a real directory (a linked "
+                "worktree has a .git *file* instead, pointing back here, and "
+                "resolves to this entry automatically)."
             ),
             "projects.<name>.workflow": (
                 "'worktree-pr': agents create or reuse a git worktree on a "
