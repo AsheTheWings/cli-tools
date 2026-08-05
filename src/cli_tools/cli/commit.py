@@ -333,14 +333,12 @@ EXIT_PUSH_FAILED = 3
 )
 @click.option(
     "--only",
-    "--stage",
     "only_paths",
     multiple=True,
     metavar="PATHSPEC",
     help=(
         "Stage and commit only the given Git pathspec. Repeat for multiple "
-        "pathspecs; requires an initially clean index. "
-        "('--stage' is kept as a legacy alias.)"
+        "pathspecs; requires an initially clean index."
     ),
 )
 @click.option(
@@ -412,7 +410,7 @@ def commit_command(
         sys.exit(1)
 
     if only_paths and staged:
-        raise click.UsageError("--only/--stage and --staged are mutually exclusive")
+        raise click.UsageError("--only and --staged are mutually exclusive")
 
     if message is not None and instructions is not None:
         raise click.UsageError("--message and --instructions are mutually exclusive")

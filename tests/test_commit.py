@@ -144,29 +144,9 @@ class SelectiveCommitTest(unittest.TestCase):
         new_callable=AsyncMock,
         return_value="test: commit selected changes",
     )
-    def test_stage_pathspec_commits_only_selected_changes(
+    def test_only_pathspec_commits_only_selected_changes(
         self, _generate: AsyncMock
     ) -> None:
-        (self.repo / "selected.txt").write_text("selected\n")
-        (self.repo / "remaining.txt").write_text("remaining\n")
-
-        result = CliRunner().invoke(
-            commit_command,
-            [str(self.repo), "--stage", "selected.txt"],
-        )
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(
-            self.git("show", "--format=", "--name-only", "HEAD"), "selected.txt"
-        )
-        self.assertEqual(self.git("status", "--short"), "M remaining.txt")
-
-    @patch(
-        "cli_tools.cli.commit.generate_commit_message",
-        new_callable=AsyncMock,
-        return_value="test: commit selected changes",
-    )
-    def test_only_flag_is_the_preferred_alias(self, _generate: AsyncMock) -> None:
         (self.repo / "selected.txt").write_text("selected\n")
         (self.repo / "remaining.txt").write_text("remaining\n")
 
@@ -180,6 +160,20 @@ class SelectiveCommitTest(unittest.TestCase):
             self.git("show", "--format=", "--name-only", "HEAD"), "selected.txt"
         )
         self.assertEqual(self.git("status", "--short"), "M remaining.txt")
+
+    def test_stage_flag_is_rejected_loudly_before_any_mutation(self) -> None:
+        (self.repo / "selected.txt").write_text("selected\n")
+        head_before = self.git("rev-parse", "HEAD")
+
+        result = CliRunner().invoke(
+            commit_command,
+            [str(self.repo), "--stage", "selected.txt"],
+        )
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("No such option", result.output)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
 
     @patch(
         "cli_tools.cli.commit.generate_commit_message",
@@ -204,14 +198,14 @@ class SelectiveCommitTest(unittest.TestCase):
         )
         self.assertEqual(self.git("status", "--short"), "M remaining.txt")
 
-    def test_stage_pathspec_refuses_an_existing_index(self) -> None:
+    def test_only_pathspec_refuses_an_existing_index(self) -> None:
         (self.repo / "selected.txt").write_text("selected\n")
         (self.repo / "remaining.txt").write_text("remaining\n")
         self.git("add", "remaining.txt")
 
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--stage", "selected.txt"],
+            [str(self.repo), "--only", "selected.txt"],
         )
 
         self.assertEqual(result.exit_code, 1, result.output)
@@ -222,7 +216,7 @@ class SelectiveCommitTest(unittest.TestCase):
     def test_staging_modes_are_mutually_exclusive(self) -> None:
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--stage", "selected.txt", "--staged"],
+            [str(self.repo), "--only", "selected.txt", "--staged"],
         )
 
         self.assertEqual(result.exit_code, 2, result.output)
