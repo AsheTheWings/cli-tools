@@ -58,7 +58,7 @@ Merge persisted changes into live account objects.
     def test_preserves_plain_messages_and_internal_body_fences(self) -> None:
         plain = (
             "fix(cli): retain examples\n\n"
-            "Document this example:\n```sh\ntool commit -y\n```"
+            "Document this example:\n```sh\ntool commit --push\n```"
         )
         self.assertEqual(normalize_commit_message(plain), plain)
 
@@ -152,7 +152,7 @@ class SelectiveCommitTest(unittest.TestCase):
 
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--stage", "selected.txt", "-y"],
+            [str(self.repo), "--stage", "selected.txt"],
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -172,7 +172,7 @@ class SelectiveCommitTest(unittest.TestCase):
 
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--only", "selected.txt", "-y"],
+            [str(self.repo), "--only", "selected.txt"],
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -195,7 +195,7 @@ class SelectiveCommitTest(unittest.TestCase):
 
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--staged", "-y"],
+            [str(self.repo), "--staged"],
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -211,7 +211,7 @@ class SelectiveCommitTest(unittest.TestCase):
 
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "--stage", "selected.txt", "-y"],
+            [str(self.repo), "--stage", "selected.txt"],
         )
 
         self.assertEqual(result.exit_code, 1, result.output)
@@ -255,16 +255,33 @@ class InvocationContextTest(unittest.TestCase):
         )
         return result.stdout.strip()
 
-    def test_cli_runner_stdin_is_non_interactive_without_yes(self) -> None:
+    @patch(
+        "cli_tools.cli.commit.generate_commit_message",
+        new_callable=AsyncMock,
+        return_value="test: deterministic commit",
+    )
+    def test_non_interactive_stdin_commits_deterministically(
+        self, _generate: AsyncMock
+    ) -> None:
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(commit_command, [str(self.repo)])
 
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("not interactive", result.output)
-        # Fails before staging or committing anything.
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.git("log", "-1", "--format=%s"), "test: deterministic commit"
+        )
+
+    def test_yes_flag_is_rejected_loudly_before_any_mutation(self) -> None:
+        (self.repo / "tracked.txt").write_text("changed\n")
+        head_before = self.git("rev-parse", "HEAD")
+
+        result = CliRunner().invoke(commit_command, [str(self.repo), "-y"])
+
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("No such option", result.output)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
         self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
-        self.assertEqual(self.git("status", "--short"), "M tracked.txt")
 
     @patch(
         "cli_tools.cli.commit.generate_commit_message",
@@ -279,7 +296,7 @@ class InvocationContextTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-y", "--push"]
+            commit_command, [str(self.repo), "--push"]
         )
 
         self.assertEqual(result.exit_code, 1, result.output)
@@ -290,7 +307,7 @@ class InvocationContextTest(unittest.TestCase):
     def test_message_and_instructions_are_mutually_exclusive(self) -> None:
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "-y", "-m", "fix: x", "-i", "extra"],
+            [str(self.repo), "-m", "fix: x", "-i", "extra"],
         )
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("mutually exclusive", result.output)
@@ -336,7 +353,7 @@ class MessageSourceTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-m", "fix: manual message", "-y"]
+            commit_command, [str(self.repo), "-m", "fix: manual message"]
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -394,7 +411,7 @@ class MessageSourceTest(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), stage_head)
 
         # A real run still undoes the trailing stage commit and recommits.
-        result = CliRunner().invoke(commit_command, [str(self.repo), "-y"])
+        result = CliRunner().invoke(commit_command, [str(self.repo)])
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(self.git("log", "-1", "--format=%s"), "test: real commit")
         # The changes from the 'stage' commit landed in the new commit plus
@@ -410,7 +427,7 @@ class MessageSourceTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-y", "--json"]
+            commit_command, [str(self.repo), "--json"]
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -462,10 +479,10 @@ class PushBehaviorTest(unittest.TestCase):
         new_callable=AsyncMock,
         return_value="test: local only",
     )
-    def test_yes_does_not_push_without_push_flag(self, _generate: AsyncMock) -> None:
+    def test_commit_stays_local_without_push_flag(self, _generate: AsyncMock) -> None:
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(commit_command, [str(self.repo), "-y"])
+        result = CliRunner().invoke(commit_command, [str(self.repo)])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(self.ls_remote("origin"), "")
@@ -481,7 +498,7 @@ class PushBehaviorTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-y", "--push"]
+            commit_command, [str(self.repo), "--push"]
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -507,7 +524,7 @@ class PushBehaviorTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-y", "--push"]
+            commit_command, [str(self.repo), "--push"]
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
@@ -530,7 +547,7 @@ class PushBehaviorTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-y", "--push"]
+            commit_command, [str(self.repo), "--push"]
         )
 
         self.assertEqual(result.exit_code, 3, result.output)

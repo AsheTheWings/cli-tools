@@ -372,18 +372,10 @@ def undo_trailing_stage_commits(cwd: str) -> int:
 @click.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
-    "-y",
-    "--yes",
-    is_flag=True,
-    help="Skip the commit confirmation prompt. Does NOT push; combine with "
-    "--push for full automation.",
-)
-@click.option(
     "--push/--no-push",
     "push",
-    default=None,
-    help="Push after committing: --push pushes without asking, --no-push skips "
-    "pushing. When neither is given: ask if interactive, skip push otherwise. "
+    default=False,
+    help="Push after committing. Default is --no-push: the commit stays local. "
     "Pushes to the branch's configured upstream if it has one, otherwise to "
     "origin/<branch>.",
 )
@@ -434,8 +426,7 @@ def undo_trailing_stage_commits(cwd: str) -> int:
 )
 def commit_command(
     path: str,
-    yes: bool,
-    push: Optional[bool],
+    push: bool,
     instructions: Optional[str],
     message: Optional[str],
     dry_run: bool,
@@ -446,6 +437,10 @@ def commit_command(
     """
     Generate a conventional commit message using Tera AI.
 
+    The command is fully deterministic and never prompts: all behavior is
+    controlled by arguments and flags, so it is safe to call from scripts
+    and AI agents with any stdin.
+
     \b
     Staging modes (mutually exclusive):
       (default)         stage all changes with 'git add .'; trailing commits
@@ -455,26 +450,25 @@ def commit_command(
       --staged          use the index exactly as it is
 
     \b
-    Interactivity:
-      Prompts require a TTY. On non-interactive stdin the command fails early
-      unless -y/--yes (or --dry-run) is given. Pushing only happens with
-      --push (or when confirmed interactively).
+    Behavior:
+      Commits immediately; use --dry-run to preview the message first.
+      Pushes only when --push is given.
 
     \b
     Exit codes:
       0  success, or nothing staged to commit
-      1  failure, cancelled, or invalid invocation context
+      1  failure or invalid invocation context
       2  usage error (conflicting/invalid flags)
       3  commit succeeded but the requested push failed
 
     \b
     Examples:
         tool commit
-        tool commit /path/to/repo
-        tool commit . -y --push            # fully automated: commit and push
-        tool commit . -y                   # commit without prompting, no push
+        tool commit /path/to/repo --push
+        tool commit . --push               # commit and push
+        tool commit .                      # commit locally, no push
         tool commit . --dry-run            # preview the generated message
-        tool commit . -m "fix: typo" -y    # skip AI generation
+        tool commit . -m "fix: typo"       # skip AI generation
         tool commit . --only src --only tests
         tool commit . --staged
         tool commit . --instructions "focus on performance improvements"
@@ -495,7 +489,7 @@ def commit_command(
     if message is not None and instructions is not None:
         raise click.UsageError("--message and --instructions are mutually exclusive")
 
-    if dry_run and push is True:
+    if dry_run and push:
         raise click.UsageError("--dry-run cannot be combined with --push")
 
     click.echo(f"📁 Repository: {repo_path}")
@@ -504,20 +498,10 @@ def commit_command(
     # Pre-flight checks: fail before mutating the index or paying for an AI
     # generation call when the invocation context cannot work.
     branch_name = get_current_branch(str(repo_path))
-    if push is True and branch_name is None:
+    if push and branch_name is None:
         click.echo(
             "❌ --push requested but HEAD is detached (nothing to push from). "
             "Re-run with --no-push to commit without pushing.",
-            err=True,
-        )
-        sys.exit(1)
-
-    interactive = sys.stdin.isatty()
-    if not interactive and not yes and not dry_run:
-        click.echo(
-            "❌ stdin is not interactive and confirmation is required. "
-            "Pass -y/--yes to confirm the commit without prompting, or "
-            "--dry-run to preview the message.",
             err=True,
         )
         sys.exit(1)
@@ -697,19 +681,6 @@ def commit_command(
             )
         return
 
-    # Confirm and commit. Step 1 guaranteed prompts only happen on a TTY.
-    if not yes and not click.confirm("Proceed with this commit message?", default=True):
-        click.echo("❌ Commit cancelled; nothing was committed.")
-        if not staged:
-            click.echo("🔄 Unstaging changes added by this command...")
-            reset_args = ["reset", "HEAD"]
-            if only_paths:
-                reset_args.extend(["--", *only_paths])
-            run_git_command(reset_args, str(repo_path))
-        else:
-            click.echo("ℹ️  Existing staged changes were left intact.")
-        sys.exit(1)
-
     click.echo("💾 Committing changes...")
     returncode, stdout, stderr = run_git_command(
         ["commit", "-m", commit_message], str(repo_path)
@@ -725,24 +696,13 @@ def commit_command(
     click.echo("✅ Changes committed successfully!")
     click.echo(stdout)
 
-    # Decide whether to push. --push already pre-validated a non-detached
-    # HEAD above; here we resolve the concrete target.
+    # Push only when explicitly requested; detached HEAD was pre-validated
+    # above for that case.
     pushed = False
     push_description = None
     push_failed = False
-    want_push = push is True
-    if push is None:
-        if branch_name is None:
-            click.echo("ℹ️  Detached HEAD: skipping push.")
-        elif interactive:
-            want_push = click.confirm("Push to origin?", default=False)
-        else:
-            click.echo(
-                "ℹ️  stdin is not interactive and --push was not given; "
-                "leaving the commit local."
-            )
 
-    if want_push:
+    if push:
         push_argv, push_description, is_fallback = resolve_push_args(
             str(repo_path), branch_name
         )
