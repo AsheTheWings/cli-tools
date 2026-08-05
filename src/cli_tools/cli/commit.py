@@ -303,6 +303,14 @@ EXIT_PUSH_FAILED = 3
 @click.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option(
+    "--user",
+    is_flag=True,
+    help="Override the workspace preferences (see 'tool setup workspace'): "
+    "skip the worktree-pr policy check and commit in the project's main "
+    "checkout. Reserved for direct human use; the override is noted in the "
+    "output so it stays observable.",
+)
+@click.option(
     "--push/--no-push",
     "push",
     default=False,
@@ -355,6 +363,7 @@ EXIT_PUSH_FAILED = 3
 )
 def commit_command(
     path: str,
+    user: bool,
     push: bool,
     instructions: Optional[str],
     message: Optional[str],
@@ -381,8 +390,8 @@ def commit_command(
       Commits immediately; use --dry-run to preview the message first.
       Pushes only when --push is given.
       Rejects commits made in the main checkout of a project whose workspace
-      preferences set workflow "worktree-pr" — use a linked worktree instead.
-      See 'tool setup workspace'.
+      preferences set workflow "worktree-pr" — use a linked worktree instead,
+      or pass --user to override (logged). See 'tool setup workspace'.
 
     \b
     Exit codes:
@@ -401,6 +410,7 @@ def commit_command(
         tool commit . -m "fix: typo"       # skip AI generation
         tool commit . --only src --only tests
         tool commit . --staged
+        tool commit . --user               # override a worktree-pr policy refusal
         tool commit . --instructions "focus on performance improvements"
 
     PATH: Repository path (defaults to current directory)
@@ -434,22 +444,33 @@ def commit_command(
     except workspace.WorkspaceConfigError as exc:
         click.echo(f"⚠️  Ignoring unusable workspace config: {exc}", err=True)
         project = None
+    policy_override = False
     if (
         project is not None
         and project.uses_worktree_pr
         and workspace.is_main_checkout(repo_path)
     ):
-        click.echo(
-            f"❌ Workspace policy: '{project.name}' is configured for the "
-            f"worktree+PR workflow (see {workspace.default_config_path()}), "
-            f"but {repo_path} is its main checkout.\n"
-            f"   Work in a linked worktree on a branch and open a PR instead, "
-            f"e.g.:\n"
-            f"     git -C {project.path} worktree add <worktree-path> "
-            f"-b <branch>",
-            err=True,
-        )
-        sys.exit(1)
+        if user:
+            policy_override = True
+            click.echo(
+                f"⚠️  --user: overriding the worktree-pr workspace policy of "
+                f"'{project.name}'; committing in its main checkout.",
+                err=True,
+            )
+        else:
+            click.echo(
+                f"❌ Workspace policy: '{project.name}' is configured for the "
+                f"worktree+PR workflow (see {workspace.default_config_path()}), "
+                f"but {repo_path} is its main checkout.\n"
+                f"   Work in a linked worktree on a branch and open a PR "
+                f"instead, e.g.:\n"
+                f"     git -C {project.path} worktree add <worktree-path> "
+                f"-b <branch>\n"
+                f"   (--user overrides this policy; it is reserved for direct "
+                f"human use.)",
+                err=True,
+            )
+            sys.exit(1)
 
     # Pre-flight checks: fail before mutating the index or paying for an AI
     # generation call when the invocation context cannot work.
@@ -510,6 +531,7 @@ def commit_command(
                         "committed": False,
                         "pushed": False,
                         "dry_run": dry_run,
+                        "policy_override": policy_override,
                         "reason": "no staged changes",
                     }
                 )
@@ -620,6 +642,7 @@ def commit_command(
                         "committed": False,
                         "pushed": False,
                         "dry_run": True,
+                        "policy_override": policy_override,
                         "message": commit_message,
                         "message_source": message_source,
                     }
@@ -686,6 +709,7 @@ def commit_command(
                     "push_target": push_description if pushed else None,
                     "push_failed": push_failed,
                     "dry_run": False,
+                    "policy_override": policy_override,
                     "message": commit_message,
                     "message_source": message_source,
                 }
