@@ -2,8 +2,8 @@
 Workspace preferences shared by CLI commands and agent instructions.
 
 The canonical configuration lives at ``workspace.json`` in the directives
-prompts tree (``/root/Desktop/directives/prompts/workspace.json``). That path
-is the single source of truth: the prompts sync tooling only manages the
+prompts tree (``/root/Desktop/directives/main/prompts/workspace.json``). That
+path is the single source of truth: the prompts sync tooling only manages the
 ``.codex``, ``.agents`` and ``.config/opencode`` roots, so the file is read
 directly from the repository checkout by both this CLI and by agents.
 
@@ -44,8 +44,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-#: Default location of the canonical workspace preferences file.
-DEFAULT_CONFIG_PATH = Path("/root/Desktop/directives/prompts/workspace.json")
+#: Default location of the canonical workspace preferences file: the ``main``
+#: checkout of the directives repository.
+DEFAULT_CONFIG_PATH = Path("/root/Desktop/directives/main/prompts/workspace.json")
 
 #: Environment variable that overrides the configuration path (used by tests
 #: and by anyone keeping the preferences file outside the directives tree).
