@@ -46,6 +46,7 @@ from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
 from cli_tools.cli.clean_codex_session import clean_codex_session_command
 from cli_tools.cli.codashe import codashe_command
+from cli_tools.cli.extraxt_handoff import extraxt_handoff_command
 
 main.add_command(commit_command, "commit")
 main.add_command(setup_command, "setup")
@@ -54,6 +55,8 @@ main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")
 main.add_command(clean_codex_session_command)
 main.add_command(codashe_command)
+main.add_command(extraxt_handoff_command, "extraxt-handoff")
+main.add_command(extraxt_handoff_command, "extract-handoff")
 
 
 if __name__ == "__main__":
