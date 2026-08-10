@@ -239,6 +239,40 @@ class CommitPolicyTest(unittest.TestCase):
     def head(self) -> str:
         return self.fixture.git(self.repo, "rev-parse", "HEAD")
 
+    def tracking_main_worktree(self) -> tuple[Path, Path, str]:
+        origin = self.fixture.root / "origin.git"
+        self.fixture.git(self.repo, "init", "-q", "--bare", str(origin))
+        self.fixture.git(self.repo, "remote", "add", "origin", str(origin))
+        local_branch = self.fixture.git(self.repo, "branch", "--show-current")
+        self.fixture.git(
+            self.repo, "push", "-q", "origin", f"{local_branch}:main"
+        )
+        main_before = self.fixture.git(
+            self.repo, "ls-remote", "origin", "refs/heads/main"
+        ).split()[0]
+        worktree_path = self.fixture.root / "tracking-main"
+        self.fixture.git(
+            self.repo,
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "task/safe-push",
+            str(worktree_path),
+            "origin/main",
+        )
+        self.assertEqual(
+            self.fixture.git(
+                worktree_path,
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ),
+            "origin/main",
+        )
+        return worktree_path, origin, main_before
+
     def test_worktree_pr_main_checkout_commit_is_rejected_before_staging(
         self,
     ) -> None:
@@ -270,6 +304,73 @@ class CommitPolicyTest(unittest.TestCase):
         self.assertEqual(
             self.fixture.git(worktree_path, "log", "-1", "--format=%s"),
             "feat: worktree commit",
+        )
+
+    def test_worktree_push_retargets_differently_named_main_upstream(self) -> None:
+        self.configure("worktree-pr")
+        worktree_path, _origin, main_before = self.tracking_main_worktree()
+        (worktree_path / "tracked.txt").write_text("safe change\n")
+
+        result = self.invoke_commit(
+            str(worktree_path),
+            "-m",
+            "feat: safe worktree push",
+            "--push",
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Workspace push safety", result.output)
+        self.assertIn("origin/task/safe-push", result.output)
+        self.assertLess(
+            result.output.index("Push target"),
+            result.output.index("Staging all changes"),
+        )
+        self.assertEqual(
+            self.fixture.git(
+                self.repo, "ls-remote", "origin", "refs/heads/main"
+            ).split()[0],
+            main_before,
+        )
+        self.assertEqual(
+            self.fixture.git(
+                self.repo,
+                "ls-remote",
+                "origin",
+                "refs/heads/task/safe-push",
+            ).split()[0],
+            self.fixture.git(worktree_path, "rev-parse", "HEAD"),
+        )
+        self.assertEqual(
+            self.fixture.git(
+                worktree_path, "rev-parse", "--abbrev-ref", "@{upstream}"
+            ),
+            "origin/task/safe-push",
+        )
+
+    def test_push_upstream_explicitly_allows_different_remote_name(self) -> None:
+        self.configure("worktree-pr")
+        worktree_path, _origin, main_before = self.tracking_main_worktree()
+        (worktree_path / "tracked.txt").write_text("explicit change\n")
+
+        result = self.invoke_commit(
+            str(worktree_path),
+            "-m",
+            "feat: explicit upstream push",
+            "--push",
+            "--push-upstream",
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn(
+            "--push-upstream: explicitly targeting origin/main", result.output
+        )
+        pushed_main = self.fixture.git(
+            self.repo, "ls-remote", "origin", "refs/heads/main"
+        ).split()[0]
+        self.assertNotEqual(pushed_main, main_before)
+        self.assertEqual(
+            pushed_main,
+            self.fixture.git(worktree_path, "rev-parse", "HEAD"),
         )
 
     def test_direct_project_main_checkout_commits_normally(self) -> None:

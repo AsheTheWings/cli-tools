@@ -263,21 +263,29 @@ def get_staged_names(cwd: str) -> set[str]:
     return {name for name in stdout.split("\0") if name}
 
 
-def resolve_push_args(cwd: str, branch: str) -> tuple[list[str], str, bool]:
+def resolve_push_args(
+    cwd: str,
+    branch: str,
+    *,
+    require_same_name: bool = False,
+    allow_different_upstream: bool = False,
+) -> tuple[list[str], str, str]:
     """
     Build the git push argv for a branch, honoring its configured upstream.
 
-    If the branch has an upstream (possibly on a different remote and/or with a
-    different remote branch name), push to that remote/ref. Otherwise fall back
-    to pushing to origin/<branch>, which may create a new remote branch.
+    If the branch has an upstream, push to that remote/ref unless same-name
+    safety is required and the configured remote branch differs. A missing or
+    unsafe upstream falls back to origin/<branch> and establishes that mapping.
 
     Args:
         cwd: Working directory for git command
         branch: Local branch name to push
+        require_same_name: Keep the local and remote branch names identical
+        allow_different_upstream: Explicitly permit a differently named upstream
 
     Returns:
         Tuple of (push argv after "git push", human description of the target,
-        whether this is the origin/<branch> fallback)
+        and one of "configured", "unconfigured", or "safe-retarget")
     """
     returncode, upstream, _ = run_git_command(
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd
@@ -286,12 +294,26 @@ def resolve_push_args(cwd: str, branch: str) -> tuple[list[str], str, bool]:
     if returncode == 0 and upstream:
         remote, _, remote_branch = upstream.partition("/")
         if remote and remote_branch:
+            if (
+                not require_same_name
+                or remote_branch == branch
+                or allow_different_upstream
+            ):
+                return (
+                    [remote, f"{branch}:{remote_branch}"],
+                    f"{remote}/{remote_branch}",
+                    "configured",
+                )
             return (
-                [remote, f"{branch}:{remote_branch}"],
-                f"{remote}/{remote_branch}",
-                False,
+                ["--set-upstream", "origin", branch],
+                f"origin/{branch}",
+                "safe-retarget",
             )
-    return (["origin", branch], f"origin/{branch}", True)
+    return (
+        ["--set-upstream", "origin", branch],
+        f"origin/{branch}",
+        "unconfigured",
+    )
 
 
 # Exit code used when the commit succeeded but the push failed, so callers
@@ -315,8 +337,15 @@ EXIT_PUSH_FAILED = 3
     "push",
     default=False,
     help="Push after committing. Default is --no-push: the commit stays local. "
-    "Pushes to the branch's configured upstream if it has one, otherwise to "
-    "origin/<branch>.",
+    "For worktree-pr projects, the remote branch must match the local branch; "
+    "otherwise uses the configured upstream or origin/<branch>.",
+)
+@click.option(
+    "--push-upstream",
+    is_flag=True,
+    help="With --push, explicitly allow a configured upstream whose remote "
+    "branch name differs from the local branch. This bypasses worktree-pr "
+    "same-name push safety.",
 )
 @click.option(
     "-i",
@@ -365,6 +394,7 @@ def commit_command(
     path: str,
     user: bool,
     push: bool,
+    push_upstream: bool,
     instructions: Optional[str],
     message: Optional[str],
     dry_run: bool,
@@ -389,6 +419,8 @@ def commit_command(
     Behavior:
       Commits immediately; use --dry-run to preview the message first.
       Pushes only when --push is given.
+      In worktree-pr projects, --push targets the same-named remote branch;
+      --push-upstream explicitly permits a differently named upstream.
       Rejects commits made in the main checkout of a project whose workspace
       preferences set workflow "worktree-pr" — use a linked worktree instead,
       or pass --user to override (logged). See 'tool setup workspace'.
@@ -432,6 +464,9 @@ def commit_command(
     if dry_run and push:
         raise click.UsageError("--dry-run cannot be combined with --push")
 
+    if push_upstream and not push:
+        raise click.UsageError("--push-upstream requires --push")
+
     click.echo(f"📁 Repository: {repo_path}")
     click.echo()
 
@@ -464,8 +499,8 @@ def commit_command(
                 f"but {repo_path} is its main checkout.\n"
                 f"   Work in a linked worktree on a branch and open a PR "
                 f"instead, e.g.:\n"
-                f"     git -C {project.path} worktree add <worktree-path> "
-                f"-b <branch>\n"
+                f"     git -C {project.path} worktree add --no-track "
+                f"-b <branch> <worktree-path> <base-ref>\n"
                 f"   (--user overrides this policy; it is reserved for direct "
                 f"human use.)",
                 err=True,
@@ -482,6 +517,35 @@ def commit_command(
             err=True,
         )
         sys.exit(1)
+
+    push_plan: Optional[tuple[list[str], str, str]] = None
+    if push:
+        push_plan = resolve_push_args(
+            str(repo_path),
+            branch_name,
+            require_same_name=(
+                project is not None and project.uses_worktree_pr
+            ),
+            allow_different_upstream=push_upstream,
+        )
+        _push_argv, push_description, push_mode = push_plan
+        if push_mode == "safe-retarget":
+            click.echo(
+                f"⚠️  Workspace push safety: '{branch_name}' has a differently "
+                f"named upstream; using {push_description} instead."
+            )
+        elif push_mode == "unconfigured":
+            click.echo(
+                f"⚠️  No upstream configured for '{branch_name}'; pushing to "
+                f"{push_description} and setting it as the upstream."
+            )
+        elif push_upstream:
+            click.echo(
+                f"⚠️  --push-upstream: explicitly targeting "
+                f"{push_description}."
+            )
+        click.echo(f"🚦 Push target: {push_description}")
+        click.echo()
 
     staged_before = get_staged_names(str(repo_path))
 
@@ -672,14 +736,8 @@ def commit_command(
     push_failed = False
 
     if push:
-        push_argv, push_description, is_fallback = resolve_push_args(
-            str(repo_path), branch_name
-        )
-        if is_fallback:
-            click.echo(
-                f"⚠️  No upstream configured for '{branch_name}'; pushing to "
-                f"{push_description} (may create a new remote branch)."
-            )
+        assert push_plan is not None
+        push_argv, push_description, _push_mode = push_plan
         click.echo(f"📤 Pushing to {push_description}...")
         returncode, stdout, stderr = run_git_command(
             ["push", *push_argv], str(repo_path)

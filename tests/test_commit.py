@@ -313,6 +313,13 @@ class InvocationContextTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("--dry-run", result.output)
 
+    def test_push_upstream_requires_push(self) -> None:
+        result = CliRunner().invoke(
+            commit_command, [str(self.repo), "--push-upstream"]
+        )
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("--push-upstream requires --push", result.output)
+
 
 class MessageSourceTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -475,6 +482,10 @@ class PushBehaviorTest(unittest.TestCase):
         branch = self.git("branch", "--show-current")
         remote_refs = self.ls_remote("origin")
         self.assertIn(f"refs/heads/{branch}", remote_refs)
+        self.assertEqual(
+            self.git("rev-parse", "--abbrev-ref", "@{upstream}"),
+            f"origin/{branch}",
+        )
 
     @patch(
         "cli_tools.cli.commit.generate_commit_message",

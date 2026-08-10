@@ -32,7 +32,9 @@ Workflow semantics:
   checkout).
 * ``worktree-pr``: agents must create or reuse a git worktree on a dedicated
   branch, land the change there, push, and open a pull request. Committing in
-  the main checkout is rejected by ``tool commit`` before anything is staged.
+  the main checkout is rejected by ``tool commit`` before anything is staged,
+  and pushes from linked worktrees use a same-named remote branch unless the
+  caller explicitly selects the configured upstream.
 """
 
 from __future__ import annotations
