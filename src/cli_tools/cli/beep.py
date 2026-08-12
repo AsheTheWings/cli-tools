@@ -50,21 +50,21 @@ def beep_command(interval: int, duration: int) -> None:
         tool beep 5 60    # Beep every 5 minutes for 1 hour
     """
     if interval <= 0:
-        click.echo("❌ Interval must be positive", err=True)
+        click.echo("Error: Interval must be positive", err=True)
         sys.exit(1)
 
     if duration <= 0:
-        click.echo("❌ Duration must be positive", err=True)
+        click.echo("Error: Duration must be positive", err=True)
         sys.exit(1)
 
     if interval > duration:
-        click.echo("❌ Interval cannot be greater than duration", err=True)
+        click.echo("Error: Interval cannot be greater than duration", err=True)
         sys.exit(1)
 
     interval_seconds = interval * 60
     duration_seconds = duration * 60
 
-    click.echo(f"🔔 Beeping every {interval} min for {duration} min (Ctrl+C to stop)")
+    click.echo(f"Beeping every {interval} min for {duration} min (Ctrl+C to stop)")
 
     start_time = time.time()
     beep_count = 0
@@ -99,9 +99,9 @@ def beep_command(interval: int, duration: int) -> None:
                 click.echo("\r" + " " * 30 + "\r", nl=False)  # Clear line
 
     except KeyboardInterrupt:
-        click.echo("\n⏹️  Stopped")
+        click.echo("\nStopped")
 
-    click.echo(f"✅ Done. Total beeps: {beep_count}")
+    click.echo(f"Done. Total beeps: {beep_count}")
 
 
 if __name__ == "__main__":

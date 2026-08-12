@@ -98,7 +98,7 @@ def workspace_setup(config_path: Optional[str], force: bool) -> None:
     existed = target.exists()
     if existed and not force:
         click.echo(
-            f"❌ Configuration already exists: {target}\n"
+            f"Error: Configuration already exists: {target}\n"
             f"   Edit it directly, or re-run with --force to replace it with "
             f"the scaffold (existing project preferences would be lost).",
             err=True,
@@ -113,11 +113,11 @@ def workspace_setup(config_path: Optional[str], force: bool) -> None:
     try:
         workspace.parse_projects(workspace.load_config(target))
     except workspace.WorkspaceConfigError as exc:  # pragma: no cover
-        click.echo(f"❌ Wrote an unusable configuration: {exc}", err=True)
+        click.echo(f"Error: Wrote an unusable configuration: {exc}", err=True)
         sys.exit(1)
 
     action = "Replaced" if existed else "Created"
-    click.echo(f"✅ {action} workspace preferences: {target}")
+    click.echo(f"{action} workspace preferences: {target}")
     click.echo()
     click.echo("Next steps:")
     click.echo(

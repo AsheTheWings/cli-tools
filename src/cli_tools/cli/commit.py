@@ -166,9 +166,7 @@ def run_git_command(args: list[str], cwd: str) -> tuple[int, str, str]:
 def plan_document_subject(action: str, documents: list[str]) -> str:
     """Build the operational subject used for plan document changes."""
     design_docs = [name for name in documents if name.startswith("design-")]
-    requirements_docs = [
-        name for name in documents if name.startswith("requirements-")
-    ]
+    requirements_docs = [name for name in documents if name.startswith("requirements-")]
     if len(documents) == 2 and len(design_docs) == len(requirements_docs) == 1:
         target = f"{design_docs[0]} and {requirements_docs[0]} pair"
     else:
@@ -352,16 +350,7 @@ EXIT_PUSH_FAILED = 3
     "--instructions",
     type=str,
     default=None,
-    help="Extra instructions to include in the commit message generation prompt "
-    "(mutually exclusive with --message)",
-)
-@click.option(
-    "-m",
-    "--message",
-    "message",
-    type=str,
-    default=None,
-    help="Use this commit message verbatim, skipping AI generation",
+    help="Extra instructions to include in the commit message generation prompt",
 )
 @click.option(
     "--dry-run",
@@ -396,7 +385,6 @@ def commit_command(
     push: bool,
     push_upstream: bool,
     instructions: Optional[str],
-    message: Optional[str],
     dry_run: bool,
     only_paths: tuple[str, ...],
     staged: bool,
@@ -422,7 +410,7 @@ def commit_command(
       In worktree-pr projects, --push targets the same-named remote branch;
       --push-upstream explicitly permits a differently named upstream.
       Rejects commits made in the main checkout of a project whose workspace
-      preferences set workflow "worktree-pr" — use a linked worktree instead,
+      preferences set workflow "worktree-pr" - use a linked worktree instead,
       or pass --user to override (logged). See 'tool setup workspace'.
 
     \b
@@ -439,11 +427,10 @@ def commit_command(
         tool commit . --push               # commit and push
         tool commit .                      # commit locally, no push
         tool commit . --dry-run            # preview the generated message
-        tool commit . -m "fix: typo"       # skip AI generation
         tool commit . --only src --only tests
         tool commit . --staged
         tool commit . --user               # override a worktree-pr policy refusal
-        tool commit . --instructions "focus on performance improvements"
+        tool commit . -i "focus on performance improvements"
 
     PATH: Repository path (defaults to current directory)
     """
@@ -452,14 +439,11 @@ def commit_command(
     # Check if it's a git repository
     returncode, _, stderr = run_git_command(["rev-parse", "--git-dir"], str(repo_path))
     if returncode != 0:
-        click.echo(f"❌ Not a git repository: {repo_path}", err=True)
+        click.echo(f"Error: Not a git repository: {repo_path}", err=True)
         sys.exit(1)
 
     if only_paths and staged:
         raise click.UsageError("--only and --staged are mutually exclusive")
-
-    if message is not None and instructions is not None:
-        raise click.UsageError("--message and --instructions are mutually exclusive")
 
     if dry_run and push:
         raise click.UsageError("--dry-run cannot be combined with --push")
@@ -467,7 +451,7 @@ def commit_command(
     if push_upstream and not push:
         raise click.UsageError("--push-upstream requires --push")
 
-    click.echo(f"📁 Repository: {repo_path}")
+    click.echo(f"Repository: {repo_path}")
     click.echo()
 
     # Workspace policy: a project configured for the worktree+PR workflow
@@ -477,7 +461,7 @@ def commit_command(
     try:
         project = workspace.resolve_project(repo_path)
     except workspace.WorkspaceConfigError as exc:
-        click.echo(f"⚠️  Ignoring unusable workspace config: {exc}", err=True)
+        click.echo(f"Warning: Ignoring unusable workspace config: {exc}", err=True)
         project = None
     policy_override = False
     if (
@@ -488,13 +472,13 @@ def commit_command(
         if user:
             policy_override = True
             click.echo(
-                f"⚠️  --user: overriding the worktree-pr workspace policy of "
+                f"Warning: --user: overriding the worktree-pr workspace policy of "
                 f"'{project.name}'; committing in its main checkout.",
                 err=True,
             )
         else:
             click.echo(
-                f"❌ Workspace policy: '{project.name}' is configured for the "
+                f"Error: Workspace policy: '{project.name}' is configured for the "
                 f"worktree+PR workflow (see {workspace.default_config_path()}), "
                 f"but {repo_path} is its main checkout.\n"
                 f"   Work in a linked worktree on a branch and open a PR "
@@ -512,7 +496,7 @@ def commit_command(
     branch_name = get_current_branch(str(repo_path))
     if push and branch_name is None:
         click.echo(
-            "❌ --push requested but HEAD is detached (nothing to push from). "
+            "Error: --push requested but HEAD is detached (nothing to push from). "
             "Re-run with --no-push to commit without pushing.",
             err=True,
         )
@@ -523,69 +507,67 @@ def commit_command(
         push_plan = resolve_push_args(
             str(repo_path),
             branch_name,
-            require_same_name=(
-                project is not None and project.uses_worktree_pr
-            ),
+            require_same_name=(project is not None and project.uses_worktree_pr),
             allow_different_upstream=push_upstream,
         )
         _push_argv, push_description, push_mode = push_plan
         if push_mode == "safe-retarget":
             click.echo(
-                f"⚠️  Workspace push safety: '{branch_name}' has a differently "
+                f"Warning: Workspace push safety: '{branch_name}' has a differently "
                 f"named upstream; using {push_description} instead."
             )
         elif push_mode == "unconfigured":
             click.echo(
-                f"⚠️  No upstream configured for '{branch_name}'; pushing to "
+                f"Warning: No upstream configured for '{branch_name}'; pushing to "
                 f"{push_description} and setting it as the upstream."
             )
         elif push_upstream:
             click.echo(
-                f"⚠️  --push-upstream: explicitly targeting "
+                f"Warning: --push-upstream: explicitly targeting "
                 f"{push_description}."
             )
-        click.echo(f"🚦 Push target: {push_description}")
+        click.echo(f"Push target: {push_description}")
         click.echo()
 
     staged_before = get_staged_names(str(repo_path))
 
     if staged:
-        click.echo("📝 Using changes already staged in the index...")
+        click.echo("Using changes already staged in the index...")
     elif only_paths:
         if staged_before:
             click.echo(
-                "❌ --only requires an initially clean index; commit or unstage "
+                "Error: --only requires an initially clean index; commit or unstage "
                 "existing changes, or use --staged after curating the index.",
                 err=True,
             )
             sys.exit(1)
 
         rendered_paths = " ".join(only_paths)
-        click.echo(f"📝 Staging selected pathspecs: {rendered_paths}")
+        click.echo(f"Staging selected pathspecs: {rendered_paths}")
         returncode, stdout, stderr = run_git_command(
             ["add", "--", *only_paths], str(repo_path)
         )
         if returncode != 0:
-            click.echo(f"❌ Failed to stage selected changes: {stderr}", err=True)
+            click.echo(f"Error: Failed to stage selected changes: {stderr}", err=True)
             sys.exit(1)
     else:
-        click.echo("📝 Staging all changes with 'git add .'...")
+        click.echo("Staging all changes with 'git add .'...")
         returncode, stdout, stderr = run_git_command(["add", "."], str(repo_path))
         if returncode != 0:
-            click.echo(f"❌ Failed to stage changes: {stderr}", err=True)
+            click.echo(f"Error: Failed to stage changes: {stderr}", err=True)
             sys.exit(1)
 
     # Step 2: Get diff
-    click.echo("📊 Getting staged diff with 'git diff --cached'...")
+    click.echo("Getting staged diff with 'git diff --cached'...")
     returncode, diff_output, stderr = run_git_command(
         ["diff", "--cached"], str(repo_path)
     )
     if returncode != 0:
-        click.echo(f"❌ Failed to get diff: {stderr}", err=True)
+        click.echo(f"Error: Failed to get diff: {stderr}", err=True)
         sys.exit(1)
 
     if not diff_output or not diff_output.strip():
-        click.echo("ℹ️  No staged changes to commit")
+        click.echo("No staged changes to commit")
         if json_output:
             click.echo(
                 json.dumps(
@@ -605,81 +587,70 @@ def commit_command(
     # Show diff summary
     lines = diff_output.split("\n")
     files_changed = [line for line in lines if line.startswith("diff --git")]
-    click.echo(f"📄 Files changed: {len(files_changed)}")
+    click.echo(f"Files changed: {len(files_changed)}")
     click.echo()
 
-    if message is None:
-        # Repository-specific instructions check
-        repo_instructions = None
-        if repo_path.resolve() == Path("/root/Desktop/plan").resolve():
-            created_docs = []
-            updated_docs = []
-            status_code, status_stdout, status_stderr = run_git_command(
-                ["diff", "--cached", "--name-status"], str(repo_path)
-            )
-            if status_code == 0:
-                for line in status_stdout.splitlines():
-                    if not line.strip():
-                        continue
-                    parts = line.split(maxsplit=1)
-                    if len(parts) == 2:
-                        status, file_path = parts[0], parts[1]
-                        p = Path(file_path)
-                        is_doc = False
-                        if file_path.startswith("design/") or file_path.startswith(
-                            "requirements/"
-                        ):
-                            if p.name.startswith("design-") or p.name.startswith(
-                                "requirements-"
-                            ):
-                                is_doc = True
-                        if is_doc:
-                            if status.startswith("A") or status.startswith("C"):
-                                created_docs.append(p.name)
-                            elif status.startswith("M") or status.startswith("R"):
-                                updated_docs.append(p.name)
-
-            repo_instructions = plan_repository_instructions(
-                created_docs, updated_docs
-            )
-
-        # Combine instructions
-        combined_instructions = []
-        if repo_instructions:
-            combined_instructions.append(repo_instructions)
-        if instructions:
-            combined_instructions.append(instructions)
-        final_instructions = (
-            "\n\n".join(combined_instructions) if combined_instructions else None
+    # Repository-specific instructions check
+    repo_instructions = None
+    if repo_path.resolve() == Path("/root/Desktop/plan").resolve():
+        created_docs = []
+        updated_docs = []
+        status_code, status_stdout, status_stderr = run_git_command(
+            ["diff", "--cached", "--name-status"], str(repo_path)
         )
+        if status_code == 0:
+            for line in status_stdout.splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2:
+                    status, file_path = parts[0], parts[1]
+                    p = Path(file_path)
+                    is_doc = False
+                    if file_path.startswith("design/") or file_path.startswith(
+                        "requirements/"
+                    ):
+                        if p.name.startswith("design-") or p.name.startswith(
+                            "requirements-"
+                        ):
+                            is_doc = True
+                    if is_doc:
+                        if status.startswith("A") or status.startswith("C"):
+                            created_docs.append(p.name)
+                        elif status.startswith("M") or status.startswith("R"):
+                            updated_docs.append(p.name)
 
-        # Get recent commits for context
-        click.echo("📜 Fetching recent commits for context...")
-        recent_commits = get_recent_commits(str(repo_path), num_commits=5)
-        if recent_commits:
-            click.echo("✅ Found recent commit history")
-        else:
-            click.echo("⚠️  No recent commits found (new repository or shallow clone)")
-        click.echo()
+        repo_instructions = plan_repository_instructions(created_docs, updated_docs)
 
-        # Generate commit message with Tera AI
-        click.echo("🤖 Generating commit message with Tera AI...")
-        try:
-            commit_message = asyncio.run(
-                generate_commit_message(
-                    diff_output, recent_commits, final_instructions
-                )
-            )
-        except Exception as e:
-            click.echo(f"❌ Failed to generate commit message: {e}", err=True)
-            sys.exit(1)
-        message_source = "generated"
+    # Combine built-in repository guidance with optional caller instructions.
+    combined_instructions = []
+    if repo_instructions:
+        combined_instructions.append(repo_instructions)
+    if instructions:
+        combined_instructions.append(instructions)
+    final_instructions = (
+        "\n\n".join(combined_instructions) if combined_instructions else None
+    )
+
+    # Get recent commits for context
+    click.echo("Fetching recent commits for context...")
+    recent_commits = get_recent_commits(str(repo_path), num_commits=5)
+    if recent_commits:
+        click.echo("Found recent commit history")
     else:
-        commit_message = message.strip().lstrip("\ufeff")
-        if not commit_message:
-            click.echo("❌ --message must not be empty", err=True)
-            sys.exit(1)
-        message_source = "provided"
+        click.echo("Warning: No recent commits found (new repository or shallow clone)")
+    click.echo()
+
+    # Generate commit message with Tera AI
+    click.echo("Generating commit message with Tera AI...")
+    try:
+        commit_message = asyncio.run(
+            generate_commit_message(diff_output, recent_commits, final_instructions)
+        )
+    except Exception as e:
+        click.echo(f"Error: Failed to generate commit message: {e}", err=True)
+        sys.exit(1)
+    message_source = "generated"
 
     # Display the message
     click.echo()
@@ -696,7 +667,7 @@ def commit_command(
         newly_staged = sorted(get_staged_names(str(repo_path)) - staged_before)
         if newly_staged:
             run_git_command(["reset", "-q", "--", *newly_staged], str(repo_path))
-        click.echo("🔍 Dry run: nothing committed; index restored to prior state.")
+        click.echo("Dry run: nothing committed; index restored to prior state.")
         if json_output:
             click.echo(
                 json.dumps(
@@ -714,19 +685,19 @@ def commit_command(
             )
         return
 
-    click.echo("💾 Committing changes...")
+    click.echo("Committing changes...")
     returncode, stdout, stderr = run_git_command(
         ["commit", "-m", commit_message], str(repo_path)
     )
 
     if returncode != 0:
-        click.echo(f"❌ Failed to commit: {stderr}", err=True)
+        click.echo(f"Error: Failed to commit: {stderr}", err=True)
         sys.exit(1)
 
     _, short_hash, _ = run_git_command(["rev-parse", "--short", "HEAD"], str(repo_path))
     short_hash = short_hash.strip()
 
-    click.echo("✅ Changes committed successfully!")
+    click.echo("Changes committed successfully!")
     click.echo(stdout)
 
     # Push only when explicitly requested; detached HEAD was pre-validated
@@ -738,7 +709,7 @@ def commit_command(
     if push:
         assert push_plan is not None
         push_argv, push_description, _push_mode = push_plan
-        click.echo(f"📤 Pushing to {push_description}...")
+        click.echo(f"Pushing to {push_description}...")
         returncode, stdout, stderr = run_git_command(
             ["push", *push_argv], str(repo_path)
         )
@@ -746,13 +717,13 @@ def commit_command(
         if returncode != 0:
             push_failed = True
             click.echo(
-                f"⚠️  Commit {short_hash} succeeded locally but the push to "
+                f"Warning: Commit {short_hash} succeeded locally but the push to "
                 f"{push_description} failed: {stderr.strip()}",
                 err=True,
             )
         else:
             pushed = True
-            click.echo(f"✅ Pushed to {push_description} successfully!")
+            click.echo(f"Pushed to {push_description} successfully!")
             click.echo(stdout)
 
     if json_output:

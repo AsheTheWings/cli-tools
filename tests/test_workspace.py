@@ -39,9 +39,7 @@ class LoadConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             custom = Path(tmp) / "custom.json"
             write_config(custom, {})
-            with patch.dict(
-                "os.environ", {workspace.CONFIG_ENV_VAR: str(custom)}
-            ):
+            with patch.dict("os.environ", {workspace.CONFIG_ENV_VAR: str(custom)}):
                 self.assertEqual(workspace.default_config_path(), custom)
                 self.assertEqual(
                     workspace.load_config(),
@@ -54,9 +52,7 @@ class ParseProjectsTest(unittest.TestCase):
         config = {
             "schemaVersion": 1,
             "projects": {},
-            "_example": {
-                "projects": {"fake": {"path": "/x", "workflow": "nope"}}
-            },
+            "_example": {"projects": {"fake": {"path": "/x", "workflow": "nope"}}},
         }
         self.assertEqual(workspace.parse_projects(config), {})
 
@@ -107,7 +103,12 @@ class RepoFixture:
     def add_worktree(self, name: str = "wt") -> Path:
         worktree_path = self.root / name
         self.git(
-            self.repo, "worktree", "add", "-q", "-b", f"task/{name}",
+            self.repo,
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            f"task/{name}",
             str(worktree_path),
         )
         return worktree_path
@@ -141,9 +142,7 @@ class ResolveProjectTest(unittest.TestCase):
         self.assertEqual(project.name, "fixture")
         nested = self.fixture.repo / "pkg"
         nested.mkdir()
-        self.assertEqual(
-            workspace.resolve_project(nested, config).name, "fixture"
-        )
+        self.assertEqual(workspace.resolve_project(nested, config).name, "fixture")
 
     def test_linked_worktree_resolves_to_owning_project(self) -> None:
         config = self.config("worktree-pr")
@@ -153,11 +152,7 @@ class ResolveProjectTest(unittest.TestCase):
         self.assertEqual(project.path, self.fixture.repo)
 
     def test_unrelated_repo_has_no_project(self) -> None:
-        config = {
-            "projects": {
-                "other": {"path": "/elsewhere", "workflow": "direct"}
-            }
-        }
+        config = {"projects": {"other": {"path": "/elsewhere", "workflow": "direct"}}}
         self.assertIsNone(workspace.resolve_project(self.fixture.repo, config))
 
     def test_empty_config_resolves_nothing(self) -> None:
@@ -184,9 +179,7 @@ class SetupWorkspaceCommandTest(unittest.TestCase):
     def test_refuses_to_clobber_without_force(self) -> None:
         existing = {
             "schemaVersion": 1,
-            "projects": {
-                "mine": {"path": "/a", "workflow": "direct"}
-            },
+            "projects": {"mine": {"path": "/a", "workflow": "direct"}},
         }
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps(existing))
@@ -230,11 +223,15 @@ class CommitPolicyTest(unittest.TestCase):
         )
 
     def invoke_commit(self, *args: str):
-        return CliRunner().invoke(
-            commit_command,
-            list(args),
-            env={workspace.CONFIG_ENV_VAR: str(self.config)},
-        )
+        with patch(
+            "cli_tools.cli.commit.generate_commit_message",
+            return_value="test: workspace commit",
+        ):
+            return CliRunner().invoke(
+                commit_command,
+                list(args),
+                env={workspace.CONFIG_ENV_VAR: str(self.config)},
+            )
 
     def head(self) -> str:
         return self.fixture.git(self.repo, "rev-parse", "HEAD")
@@ -244,9 +241,7 @@ class CommitPolicyTest(unittest.TestCase):
         self.fixture.git(self.repo, "init", "-q", "--bare", str(origin))
         self.fixture.git(self.repo, "remote", "add", "origin", str(origin))
         local_branch = self.fixture.git(self.repo, "branch", "--show-current")
-        self.fixture.git(
-            self.repo, "push", "-q", "origin", f"{local_branch}:main"
-        )
+        self.fixture.git(self.repo, "push", "-q", "origin", f"{local_branch}:main")
         main_before = self.fixture.git(
             self.repo, "ls-remote", "origin", "refs/heads/main"
         ).split()[0]
@@ -280,7 +275,7 @@ class CommitPolicyTest(unittest.TestCase):
         (self.repo / "tracked.txt").write_text("changed\n")
         head_before = self.head()
 
-        result = self.invoke_commit(str(self.repo), "-m", "feat: rejected")
+        result = self.invoke_commit(str(self.repo))
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("Workspace policy", result.output)
@@ -295,15 +290,13 @@ class CommitPolicyTest(unittest.TestCase):
         worktree_path = self.fixture.add_worktree()
         (worktree_path / "tracked.txt").write_text("changed\n")
 
-        result = self.invoke_commit(
-            str(worktree_path), "-m", "feat: worktree commit"
-        )
+        result = self.invoke_commit(str(worktree_path))
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("Workspace policy", result.output)
         self.assertEqual(
             self.fixture.git(worktree_path, "log", "-1", "--format=%s"),
-            "feat: worktree commit",
+            "test: workspace commit",
         )
 
     def test_worktree_push_retargets_differently_named_main_upstream(self) -> None:
@@ -313,8 +306,6 @@ class CommitPolicyTest(unittest.TestCase):
 
         result = self.invoke_commit(
             str(worktree_path),
-            "-m",
-            "feat: safe worktree push",
             "--push",
         )
 
@@ -341,9 +332,7 @@ class CommitPolicyTest(unittest.TestCase):
             self.fixture.git(worktree_path, "rev-parse", "HEAD"),
         )
         self.assertEqual(
-            self.fixture.git(
-                worktree_path, "rev-parse", "--abbrev-ref", "@{upstream}"
-            ),
+            self.fixture.git(worktree_path, "rev-parse", "--abbrev-ref", "@{upstream}"),
             "origin/task/safe-push",
         )
 
@@ -354,8 +343,6 @@ class CommitPolicyTest(unittest.TestCase):
 
         result = self.invoke_commit(
             str(worktree_path),
-            "-m",
-            "feat: explicit upstream push",
             "--push",
             "--push-upstream",
         )
@@ -377,7 +364,7 @@ class CommitPolicyTest(unittest.TestCase):
         self.configure("direct")
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = self.invoke_commit(str(self.repo), "-m", "feat: direct")
+        result = self.invoke_commit(str(self.repo))
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("Workspace policy", result.output)
@@ -386,7 +373,7 @@ class CommitPolicyTest(unittest.TestCase):
         self.config.write_text("{not json")
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = self.invoke_commit(str(self.repo), "-m", "feat: tolerant")
+        result = self.invoke_commit(str(self.repo))
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Ignoring unusable workspace config", result.output)

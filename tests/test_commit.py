@@ -85,13 +85,11 @@ class PlanCommitInstructionsTest(unittest.TestCase):
     def test_pair_subject_uses_docs_type_and_filenames(self) -> None:
         self.assertEqual(
             plan_document_subject("create", self.documents),
-            "docs: create design-20260718-2.md and "
-            "requirements-20260718-2.md pair",
+            "docs: create design-20260718-2.md and " "requirements-20260718-2.md pair",
         )
         self.assertEqual(
             plan_document_subject("update", self.documents),
-            "docs: update design-20260718-2.md and "
-            "requirements-20260718-2.md pair",
+            "docs: update design-20260718-2.md and " "requirements-20260718-2.md pair",
         )
 
     def test_instructions_require_exact_operational_subjects(self) -> None:
@@ -289,22 +287,26 @@ class InvocationContextTest(unittest.TestCase):
         self.git("checkout", "-q", "--detach")
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--push"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--push"])
 
         self.assertEqual(result.exit_code, 1, result.output)
         self.assertIn("detached", result.output)
         self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
         self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
 
-    def test_message_and_instructions_are_mutually_exclusive(self) -> None:
+    def test_message_flag_is_rejected_before_any_mutation(self) -> None:
+        (self.repo / "tracked.txt").write_text("changed\n")
+        head_before = self.git("rev-parse", "HEAD")
+
         result = CliRunner().invoke(
             commit_command,
-            [str(self.repo), "-m", "fix: x", "-i", "extra"],
+            [str(self.repo), "-m", "fix: caller-selected message"],
         )
+
         self.assertEqual(result.exit_code, 2, result.output)
-        self.assertIn("mutually exclusive", result.output)
+        self.assertIn("No such option '-m'", result.output)
+        self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
 
     def test_dry_run_cannot_be_combined_with_push(self) -> None:
         result = CliRunner().invoke(
@@ -314,14 +316,12 @@ class InvocationContextTest(unittest.TestCase):
         self.assertIn("--dry-run", result.output)
 
     def test_push_upstream_requires_push(self) -> None:
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--push-upstream"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--push-upstream"])
         self.assertEqual(result.exit_code, 2, result.output)
         self.assertIn("--push-upstream requires --push", result.output)
 
 
-class MessageSourceTest(unittest.TestCase):
+class MessageGenerationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp_dir.name)
@@ -348,18 +348,23 @@ class MessageSourceTest(unittest.TestCase):
     @patch(
         "cli_tools.cli.commit.generate_commit_message",
         new_callable=AsyncMock,
-        side_effect=AssertionError("generation must be skipped"),
+        return_value="fix: model-selected message",
     )
-    def test_message_flag_skips_ai_generation(self, generate: AsyncMock) -> None:
+    def test_instructions_guide_generation_without_selecting_the_message(
+        self, generate: AsyncMock
+    ) -> None:
         (self.repo / "tracked.txt").write_text("changed\n")
 
         result = CliRunner().invoke(
-            commit_command, [str(self.repo), "-m", "fix: manual message"]
+            commit_command, [str(self.repo), "-i", "emphasize rollback safety"]
         )
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(self.git("log", "-1", "--format=%s"), "fix: manual message")
-        generate.assert_not_called()
+        self.assertEqual(
+            self.git("log", "-1", "--format=%s"), "fix: model-selected message"
+        )
+        generate.assert_awaited_once()
+        self.assertEqual(generate.await_args.args[2], "emphasize rollback safety")
 
     @patch(
         "cli_tools.cli.commit.generate_commit_message",
@@ -384,10 +389,10 @@ class MessageSourceTest(unittest.TestCase):
         self.assertIn("Dry run", result.output)
         self.assertEqual(self.git("rev-parse", "HEAD"), head_before)
         # Index restored: only the pre-staged file remains staged.
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "tracked.txt")
         self.assertEqual(
-            self.git("diff", "--cached", "--name-only"), "tracked.txt"
+            self.git("status", "--short"), "M  tracked.txt\n?? unstaged.txt"
         )
-        self.assertEqual(self.git("status", "--short"), "M  tracked.txt\n?? unstaged.txt")
 
         summary = json.loads(result.output.strip().splitlines()[-1])
         self.assertTrue(summary["dry_run"])
@@ -402,9 +407,7 @@ class MessageSourceTest(unittest.TestCase):
     def test_json_summary_line_on_success(self, _generate: AsyncMock) -> None:
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--json"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--json"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         summary = json.loads(result.output.strip().splitlines()[-1])
@@ -473,9 +476,7 @@ class PushBehaviorTest(unittest.TestCase):
     ) -> None:
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--push"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--push"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("No upstream configured", result.output)
@@ -503,9 +504,7 @@ class PushBehaviorTest(unittest.TestCase):
         self.git("push", "-q", "-u", "upstream", "topic:other-name")
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--push"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--push"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("upstream/other-name", result.output)
@@ -526,15 +525,11 @@ class PushBehaviorTest(unittest.TestCase):
         self.git("remote", "set-url", "origin", str(self.base / "missing.git"))
         (self.repo / "tracked.txt").write_text("changed\n")
 
-        result = CliRunner().invoke(
-            commit_command, [str(self.repo), "--push"]
-        )
+        result = CliRunner().invoke(commit_command, [str(self.repo), "--push"])
 
         self.assertEqual(result.exit_code, 3, result.output)
         self.assertIn("succeeded locally but the push", result.output)
-        self.assertEqual(
-            self.git("log", "-1", "--format=%s"), "test: push failure"
-        )
+        self.assertEqual(self.git("log", "-1", "--format=%s"), "test: push failure")
 
 
 if __name__ == "__main__":
