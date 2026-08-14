@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "project": "cli-tools",
+  "repository": "AsheTheWings/cli-tools",
+  "primaryBranch": "main",
+  "primaryCheckout": "cli-tools",
+  "changeDelivery": {
+    "mode": "direct"
+  }
+}

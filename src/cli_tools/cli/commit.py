@@ -17,7 +17,7 @@ from typing import Optional
 import click
 from dotenv import load_dotenv
 
-from cli_tools import workspace
+from cli_tools import project_manifest
 from cli_tools.inference.tera import get_client as get_tera_client
 
 # Load environment variables
@@ -325,10 +325,8 @@ EXIT_PUSH_FAILED = 3
 @click.option(
     "--user",
     is_flag=True,
-    help="Override the workspace preferences (see 'tool setup workspace'): "
-    "skip the worktree-pr policy check and commit in the project's main "
-    "checkout. Reserved for direct human use; the override is noted in the "
-    "output so it stays observable.",
+    help="Override .project.json delivery guards. Reserved for direct human "
+    "use; the override is noted in output so it stays observable.",
 )
 @click.option(
     "--push/--no-push",
@@ -409,14 +407,15 @@ def commit_command(
       Pushes only when --push is given.
       In worktree-pr projects, --push targets the same-named remote branch;
       --push-upstream explicitly permits a differently named upstream.
-      Rejects commits made in the main checkout of a project whose workspace
-      preferences set workflow "worktree-pr" - use a linked worktree instead,
-      or pass --user to override (logged). See 'tool setup workspace'.
+      Reads policy from the manifest accepted by the primary checkout's HEAD.
+      Rejects a worktree-pr commit in the primary checkout, a direct commit in
+      a linked worktree, and any missing or inconsistent manifest before
+      staging. --user is an observable human override.
 
     \b
     Exit codes:
       0  success, or nothing staged to commit
-      1  failure, invalid invocation context, or workspace policy rejection
+      1  failure, invalid invocation context, or project policy rejection
       2  usage error (conflicting/invalid flags)
       3  commit succeeded but the requested push failed
 
@@ -454,42 +453,51 @@ def commit_command(
     click.echo(f"Repository: {repo_path}")
     click.echo()
 
-    # Workspace policy: a project configured for the worktree+PR workflow
-    # must not receive commits in its main checkout; its linked worktrees are
-    # the intended commit targets. The check runs before any staging so a
-    # rejected invocation never mutates the index.
-    try:
-        project = workspace.resolve_project(repo_path)
-    except workspace.WorkspaceConfigError as exc:
-        click.echo(f"Warning: Ignoring unusable workspace config: {exc}", err=True)
-        project = None
+    # Project policy is read from the commit accepted by the primary checkout,
+    # not from the invoking feature branch. The check runs before staging.
+    project = None
     policy_override = False
-    if (
-        project is not None
-        and project.uses_worktree_pr
-        and workspace.is_main_checkout(repo_path)
-    ):
+    try:
+        project = project_manifest.resolve_project(repo_path)
+        in_primary = project_manifest.is_primary_checkout(repo_path)
+    except project_manifest.ProjectManifestError as exc:
         if user:
             policy_override = True
             click.echo(
-                f"Warning: --user: overriding the worktree-pr workspace policy of "
-                f"'{project.name}'; committing in its main checkout.",
+                f"Warning: --user: overriding unavailable project policy: {exc}",
                 err=True,
             )
         else:
             click.echo(
-                f"Error: Workspace policy: '{project.name}' is configured for the "
-                f"worktree+PR workflow (see {workspace.default_config_path()}), "
-                f"but {repo_path} is its main checkout.\n"
-                f"   Work in a linked worktree on a branch and open a PR "
-                f"instead, e.g.:\n"
-                f"     git -C {project.path} worktree add --no-track "
-                f"-b <branch> <worktree-path> <base-ref>\n"
-                f"   (--user overrides this policy; it is reserved for direct "
-                f"human use.)",
+                f"Error: Project policy: {exc}.\n"
+                f"   Add or repair the accepted root .project.json first. "
+                f"(--user is reserved for direct human bootstrap or repair.)",
                 err=True,
             )
             sys.exit(1)
+    else:
+        violation = None
+        if project.uses_worktree_pr and in_primary:
+            violation = "worktree-pr requires a linked worktree and pull request"
+        elif not project.uses_worktree_pr and not in_primary:
+            violation = "direct delivery requires the primary checkout"
+        if violation:
+            if user:
+                policy_override = True
+                click.echo(
+                    f"Warning: --user: overriding {project.name} project policy: "
+                    f"{violation}.",
+                    err=True,
+                )
+            else:
+                click.echo(
+                    f"Error: Project policy: '{project.name}' uses "
+                    f"'{project.workflow}' delivery; {violation}.\n"
+                    f"   Primary checkout: {project.path}\n"
+                    f"   (--user is reserved for direct human use.)",
+                    err=True,
+                )
+                sys.exit(1)
 
     # Pre-flight checks: fail before mutating the index or paying for an AI
     # generation call when the invocation context cannot work.

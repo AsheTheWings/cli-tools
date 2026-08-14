@@ -4,7 +4,6 @@ CLI Tools - Command-line utilities for AI-powered workflows.
 Usage:
     tool commit [PATH]         # Generate AI-powered git commit message
     tool commit . --push        # Auto-commit and push (no prompts)
-    tool setup workspace        # Scaffold the workspace preferences file
     tool command "description"   # Generate shell command from natural language
     tool beep 1 30              # Beep every 1 minute for 30 minutes
     tool codashe --help          # Delegate and observe codashe-omni jobs
@@ -40,7 +39,6 @@ def main(ctx) -> None:
 # =========================================================================
 
 from cli_tools.cli.commit import commit_command
-from cli_tools.cli.setup import setup_command
 from cli_tools.cli.generate_command import command_generator
 from cli_tools.cli.beep import beep_command
 from cli_tools.cli.aggr import aggr_command
@@ -49,7 +47,6 @@ from cli_tools.cli.codashe import codashe_command
 from cli_tools.cli.extraxt_handoff import extraxt_handoff_command
 
 main.add_command(commit_command, "commit")
-main.add_command(setup_command, "setup")
 main.add_command(command_generator, "command")
 main.add_command(beep_command, "beep")
 main.add_command(aggr_command, "aggr")

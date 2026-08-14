@@ -16,6 +16,36 @@ from cli_tools.cli.commit import (
     plan_document_subject,
     plan_repository_instructions,
 )
+from cli_tools.project_manifest import ProjectConfig
+
+
+_POLICY_PATCHERS = []
+
+
+def setUpModule() -> None:
+    resolve = patch(
+        "cli_tools.cli.commit.project_manifest.resolve_project",
+        side_effect=lambda path: ProjectConfig(
+            name="fixture",
+            repository="Example/fixture",
+            path=Path(path).resolve(),
+            primary_branch="main",
+            primary_checkout=Path(path).resolve().name,
+            workflow="direct",
+        ),
+    )
+    primary = patch(
+        "cli_tools.cli.commit.project_manifest.is_primary_checkout",
+        return_value=True,
+    )
+    _POLICY_PATCHERS.extend((resolve, primary))
+    for patcher in _POLICY_PATCHERS:
+        patcher.start()
+
+
+def tearDownModule() -> None:
+    for patcher in reversed(_POLICY_PATCHERS):
+        patcher.stop()
 
 
 class CommitPromptTest(unittest.TestCase):
