@@ -135,11 +135,17 @@ def resolve_project(repo_path: Path) -> ProjectConfig:
     if content is None:
         invoking_root = _git_stdout(["rev-parse", "--show-toplevel"], repo_path)
         if invoking_root and Path(invoking_root).resolve() != primary:
-            bootstrap = _git_stdout(["show", f"HEAD:{MANIFEST_NAME}"], Path(invoking_root))
+            invoking = Path(invoking_root).resolve()
+            bootstrap = _git_stdout(["show", f"HEAD:{MANIFEST_NAME}"], invoking)
+            if bootstrap is None:
+                try:
+                    bootstrap = (invoking / MANIFEST_NAME).read_text(encoding="utf-8")
+                except OSError:
+                    bootstrap = None
             if bootstrap is not None:
                 raw = _parse_manifest(
                     bootstrap,
-                    label=f"{Path(invoking_root).resolve()}@HEAD:{MANIFEST_NAME}",
+                    label=f"{invoking}:{MANIFEST_NAME}",
                 )
                 _validate_identity(raw, primary)
                 if raw["changeDelivery"]["mode"] != WORKFLOW_WORKTREE_PR:

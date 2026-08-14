@@ -108,6 +108,23 @@ class ProjectManifestResolutionTests(unittest.TestCase):
         resolved = project_manifest.resolve_project(worktree)
         self.assertEqual(resolved.workflow, "worktree-pr")
 
+    def test_uncommitted_initial_manifest_can_authorize_only_linked_commit(self) -> None:
+        fixture = RepoFixture(self)
+        fixture.git(fixture.repo, "rm", "-q", ".project.json")
+        fixture.git(fixture.repo, "commit", "-q", "-m", "pre-manifest main")
+        worktree = fixture.add_worktree()
+        manifest = {
+            "schemaVersion": 1,
+            "project": "fixture",
+            "repository": "Example/fixture",
+            "primaryBranch": "main",
+            "primaryCheckout": "main",
+            "changeDelivery": {"mode": "worktree-pr"},
+        }
+        (worktree / ".project.json").write_text(json.dumps(manifest) + "\n")
+        resolved = project_manifest.resolve_project(worktree)
+        self.assertEqual(resolved.workflow, "worktree-pr")
+
     def test_initial_direct_manifest_cannot_bootstrap_from_linked_worktree(self) -> None:
         fixture = RepoFixture(self)
         fixture.git(fixture.repo, "rm", "-q", ".project.json")
