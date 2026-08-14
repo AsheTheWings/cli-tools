@@ -105,12 +105,48 @@ def primary_checkout(repo_path: Path) -> Path:
     return common_path.parent
 
 
+def _config_from_raw(raw: dict[str, Any], primary: Path) -> ProjectConfig:
+    return ProjectConfig(
+        name=raw["project"],
+        repository=raw["repository"],
+        path=primary,
+        primary_branch=raw["primaryBranch"],
+        primary_checkout=raw["primaryCheckout"],
+        workflow=raw["changeDelivery"]["mode"],
+    )
+
+
+def _validate_identity(raw: dict[str, Any], primary: Path) -> None:
+    if primary.name != raw["primaryCheckout"]:
+        raise ProjectManifestError(
+            f"primary checkout directory is {primary.name}, not {raw['primaryCheckout']}"
+        )
+    remote = _git_stdout(["remote", "get-url", "origin"], primary)
+    identity = _repository_identity(remote or "")
+    if identity != raw["repository"]:
+        raise ProjectManifestError("primary checkout origin does not match .project.json")
+
+
 def resolve_project(repo_path: Path) -> ProjectConfig:
-    """Load policy from the commit accepted by the primary checkout's HEAD."""
+    """Load accepted policy, or a strictly worktree-PR bootstrap manifest."""
     repo_path = repo_path.resolve()
     primary = primary_checkout(repo_path)
     content = _git_stdout(["show", f"HEAD:{MANIFEST_NAME}"], primary)
     if content is None:
+        invoking_root = _git_stdout(["rev-parse", "--show-toplevel"], repo_path)
+        if invoking_root and Path(invoking_root).resolve() != primary:
+            bootstrap = _git_stdout(["show", f"HEAD:{MANIFEST_NAME}"], Path(invoking_root))
+            if bootstrap is not None:
+                raw = _parse_manifest(
+                    bootstrap,
+                    label=f"{Path(invoking_root).resolve()}@HEAD:{MANIFEST_NAME}",
+                )
+                _validate_identity(raw, primary)
+                if raw["changeDelivery"]["mode"] != WORKFLOW_WORKTREE_PR:
+                    raise ProjectManifestError(
+                        "initial project manifest bootstrap must select worktree-pr"
+                    )
+                return _config_from_raw(raw, primary)
         raise ProjectManifestError(
             f"accepted primary checkout commit does not contain {MANIFEST_NAME}"
         )
@@ -120,22 +156,8 @@ def resolve_project(repo_path: Path) -> ProjectConfig:
         raise ProjectManifestError(
             f"primary checkout is on {branch or 'detached HEAD'}, not {raw['primaryBranch']}"
         )
-    if primary.name != raw["primaryCheckout"]:
-        raise ProjectManifestError(
-            f"primary checkout directory is {primary.name}, not {raw['primaryCheckout']}"
-        )
-    remote = _git_stdout(["remote", "get-url", "origin"], primary)
-    identity = _repository_identity(remote or "")
-    if identity != raw["repository"]:
-        raise ProjectManifestError("primary checkout origin does not match .project.json")
-    return ProjectConfig(
-        name=raw["project"],
-        repository=raw["repository"],
-        path=primary,
-        primary_branch=raw["primaryBranch"],
-        primary_checkout=raw["primaryCheckout"],
-        workflow=raw["changeDelivery"]["mode"],
-    )
+    _validate_identity(raw, primary)
+    return _config_from_raw(raw, primary)
 
 
 def is_primary_checkout(repo_path: Path) -> bool:

@@ -93,6 +93,42 @@ class ProjectManifestResolutionTests(unittest.TestCase):
         with self.assertRaisesRegex(project_manifest.ProjectManifestError, "directory"):
             project_manifest.resolve_project(fixture.repo)
 
+    def test_initial_worktree_pr_manifest_can_bootstrap_from_linked_worktree(self) -> None:
+        fixture = RepoFixture(self)
+        fixture.git(fixture.repo, "rm", "-q", ".project.json")
+        fixture.git(fixture.repo, "commit", "-q", "-m", "pre-manifest main")
+        worktree = fixture.add_worktree()
+        fixture.write_manifest("worktree-pr")
+        (worktree / ".project.json").write_text(
+            (fixture.repo / ".project.json").read_text()
+        )
+        (fixture.repo / ".project.json").unlink()
+        fixture.git(worktree, "add", ".project.json")
+        fixture.git(worktree, "commit", "-q", "-m", "bootstrap manifest")
+        resolved = project_manifest.resolve_project(worktree)
+        self.assertEqual(resolved.workflow, "worktree-pr")
+
+    def test_initial_direct_manifest_cannot_bootstrap_from_linked_worktree(self) -> None:
+        fixture = RepoFixture(self)
+        fixture.git(fixture.repo, "rm", "-q", ".project.json")
+        fixture.git(fixture.repo, "commit", "-q", "-m", "pre-manifest main")
+        worktree = fixture.add_worktree()
+        manifest = {
+            "schemaVersion": 1,
+            "project": "fixture",
+            "repository": "Example/fixture",
+            "primaryBranch": "main",
+            "primaryCheckout": "main",
+            "changeDelivery": {"mode": "direct"},
+        }
+        (worktree / ".project.json").write_text(json.dumps(manifest) + "\n")
+        fixture.git(worktree, "add", ".project.json")
+        fixture.git(worktree, "commit", "-q", "-m", "unsafe bootstrap")
+        with self.assertRaisesRegex(
+            project_manifest.ProjectManifestError, "must select worktree-pr"
+        ):
+            project_manifest.resolve_project(worktree)
+
 
 class CommitPolicyTests(unittest.TestCase):
     def invoke(self, path: Path, *args: str):
