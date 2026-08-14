@@ -521,7 +521,7 @@ def commit_command(
         _push_argv, push_description, push_mode = push_plan
         if push_mode == "safe-retarget":
             click.echo(
-                f"Warning: Workspace push safety: '{branch_name}' has a differently "
+                f"Warning: Project push safety: '{branch_name}' has a differently "
                 f"named upstream; using {push_description} instead."
             )
         elif push_mode == "unconfigured":
